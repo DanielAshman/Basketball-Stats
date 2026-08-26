@@ -5,11 +5,13 @@ from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
-from models import Frame, Game
+from models import DetectedObject, Frame, Game
 from services.frame_extraction import extract_frames
+from services.vision_service import detect_objects, get_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,6 +35,12 @@ FRAMES_PATH.mkdir(parents=True, exist_ok=True)
 # no-op once they exist, and lets `models.py` stay the source of truth for
 # columns the ORM actually uses.
 Base.metadata.create_all(bind=engine)
+
+
+@app.on_event("startup")
+def warm_up_vision_model():
+    logger.info("Warming up YOLOv8 model...")
+    get_model()
 
 
 @app.get("/health")
@@ -119,6 +127,46 @@ async def list_frames(game_id: str, db: Session = Depends(get_db)):
     }
 
 
+@app.get("/api/games/{game_id}/frames/{frame_number}/image")
+async def get_frame_image(game_id: str, frame_number: int, db: Session = Depends(get_db)):
+    frame = (
+        db.query(Frame)
+        .filter(Frame.game_id == game_id, Frame.frame_number == frame_number)
+        .first()
+    )
+    if not frame or not frame.local_file_path:
+        raise HTTPException(status_code=404, detail="Frame not found")
+    return FileResponse(frame.local_file_path)
+
+
+@app.get("/api/games/{game_id}/frames/{frame_number}/detections")
+async def get_frame_detections(game_id: str, frame_number: int, db: Session = Depends(get_db)):
+    frame = (
+        db.query(Frame)
+        .filter(Frame.game_id == game_id, Frame.frame_number == frame_number)
+        .first()
+    )
+    if not frame:
+        raise HTTPException(status_code=404, detail="Frame not found")
+
+    objects = db.query(DetectedObject).filter(DetectedObject.frame_id == frame.id).all()
+    return {
+        "width": frame.width,
+        "height": frame.height,
+        "detections": [
+            {
+                "object_type": o.object_type,
+                "confidence_score": float(o.confidence_score) if o.confidence_score is not None else None,
+                "bbox_x": o.bbox_x,
+                "bbox_y": o.bbox_y,
+                "bbox_width": o.bbox_width,
+                "bbox_height": o.bbox_height,
+            }
+            for o in objects
+        ],
+    }
+
+
 def serialize_game(game: Game) -> dict:
     return {
         "id": str(game.id),
@@ -154,16 +202,32 @@ def process_video_task(game_id: str, video_path: str):
         output_dir = FRAMES_PATH / game_id
         frames, duration_seconds = extract_frames(video_path, output_dir)
 
-        for f in frames:
-            db.add(Frame(game_id=game_id, **f))
-
+        frame_rows = [Frame(game_id=game_id, **f) for f in frames]
+        db.add_all(frame_rows)
         game.frame_count = len(frames)
         game.video_duration_seconds = int(duration_seconds) if duration_seconds else None
+        db.commit()
+
+        game.processing_status = "detecting"
+        db.commit()
+
+        logger.info(f"Running YOLOv8 detection on {len(frame_rows)} frames for game {game_id}")
+        detection_count = 0
+        for frame_row in frame_rows:
+            for det in detect_objects(frame_row.local_file_path):
+                db.add(DetectedObject(frame_id=frame_row.id, **det))
+                detection_count += 1
+            frame_row.processed_at = datetime.utcnow()
+        db.commit()
+
         game.processing_status = "completed"
         game.processing_completed_at = datetime.utcnow()
         db.commit()
 
-        logger.info(f"Processing complete for game {game_id}: {len(frames)} frames extracted")
+        logger.info(
+            f"Processing complete for game {game_id}: {len(frames)} frames, "
+            f"{detection_count} detections"
+        )
     except Exception as e:
         logger.exception(f"Error processing game {game_id}")
         db.rollback()

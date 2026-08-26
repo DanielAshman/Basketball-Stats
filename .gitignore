@@ -11,3 +11,4 @@ data/*
 !data/.gitkeep
 logs/*
 !logs/.gitkeep
+backend/*.pt

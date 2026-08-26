@@ -3,12 +3,15 @@ import { useEffect, useRef } from 'react'
 const STATUS_STYLES = {
   pending: 'bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200',
   processing: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
+  detecting: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
   completed: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
   failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
 }
 
-export default function GamesList({ games, onRefresh }) {
-  const hasActiveGame = games.some((g) => g.processing_status === 'pending' || g.processing_status === 'processing')
+const ACTIVE_STATUSES = new Set(['pending', 'processing', 'detecting'])
+
+export default function GamesList({ games, onRefresh, selectedGameId, onSelect }) {
+  const hasActiveGame = games.some((g) => ACTIVE_STATUSES.has(g.processing_status))
   const intervalRef = useRef(null)
 
   useEffect(() => {
@@ -36,7 +39,13 @@ export default function GamesList({ games, onRefresh }) {
           </thead>
           <tbody>
             {games.map((g) => (
-              <tr key={g.id} className="border-b border-neutral-100 dark:border-neutral-800">
+              <tr
+                key={g.id}
+                onClick={() => g.processing_status === 'completed' && onSelect?.(g.id)}
+                className={`border-b border-neutral-100 dark:border-neutral-800 ${
+                  g.processing_status === 'completed' ? 'cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800' : ''
+                } ${selectedGameId === g.id ? 'bg-neutral-50 dark:bg-neutral-800' : ''}`}
+              >
                 <td className="py-2 pr-4">{g.title}</td>
                 <td className="py-2 pr-4">{g.date_played}</td>
                 <td className="py-2 pr-4">

@@ -8,7 +8,7 @@ opencv-python==4.8.1.78
 numpy==1.24.3
 Pillow==10.0.1
 # Vision models (YOLOv8 - much better for local use than Google Cloud)
-ultralytics==8.0.207
+ultralytics==8.4.129
 # Task queue for async processing
 celery==5.3.4
 redis==5.0.1

@@ -48,3 +48,17 @@ class Frame(Base):
     height = Column(Integer)
     processed_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class DetectedObject(Base):
+    __tablename__ = "detected_objects"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    frame_id = Column(UUID(as_uuid=True), ForeignKey("frames.id"), nullable=False)
+    object_type = Column(String(50))
+    confidence_score = Column(Numeric(5, 3))
+    bbox_x = Column(Integer)
+    bbox_y = Column(Integer)
+    bbox_width = Column(Integer)
+    bbox_height = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())

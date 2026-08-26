@@ -1,0 +1,63 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: basketball_postgres
+    environment:
+      POSTGRES_USER: basketball_user
+      POSTGRES_PASSWORD: dev_password_123
+      POSTGRES_DB: basketball_analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U basketball_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (for task queue, caching)
+  redis:
+    image: redis:7-alpine
+    container_name: basketball_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: basketball_backend
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://basketball_user:dev_password_123@postgres:5432/basketball_analytics
+      REDIS_URL: redis://redis:6379
+      VIDEOS_PATH: /app/videos
+      ENVIRONMENT: development
+    volumes:
+      - ./backend:/app
+      - ./videos:/app/videos
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:

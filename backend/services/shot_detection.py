@@ -99,6 +99,7 @@ def detect_shots(ball_positions, hoop_x, hoop_y, frame_width):
             "confidence_score": round(confidence, 3),
             "event_details": {
                 "made": made,
+                "closest_frame": closest["frame_number"],
                 "closest_distance_px": round(closest["distance"], 1),
                 "hoop_x": hoop_x,
                 "hoop_y": hoop_y,

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from database import Base, SessionLocal, engine, get_db
 from models import DetectedObject, Frame, Game, GameEvent
 from services.frame_extraction import extract_frames
+from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
 from services.vision_service import detect_objects, get_model
 
@@ -213,35 +214,67 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
     frames = db.query(Frame).filter(Frame.game_id == game_id).order_by(Frame.frame_number).all()
     if not frames:
         raise HTTPException(status_code=400, detail="No frames to analyze")
+    frame_width = frames[0].width
+
+    frame_by_id = {f.id: f for f in frames}
+    detections = db.query(DetectedObject).filter(DetectedObject.frame_id.in_(frame_by_id.keys())).all()
+
+    by_frame_number = {f.frame_number: {"balls": [], "persons": []} for f in frames}
+    for d in detections:
+        frame_number = frame_by_id[d.frame_id].frame_number
+        center = {
+            "x": d.bbox_x + d.bbox_width / 2,
+            "y": d.bbox_y + d.bbox_height / 2,
+            "confidence": float(d.confidence_score) if d.confidence_score is not None else 0.0,
+        }
+        if d.object_type == "sports_ball":
+            by_frame_number[frame_number]["balls"].append(center)
+        elif d.object_type == "person":
+            by_frame_number[frame_number]["persons"].append(center)
+    for data in by_frame_number.values():
+        data["balls"].sort(key=lambda c: c["confidence"], reverse=True)
 
     ball_positions = []
+    frames_by_number = {}
     for frame in frames:
-        best = (
-            db.query(DetectedObject)
-            .filter(DetectedObject.frame_id == frame.id, DetectedObject.object_type == "sports_ball")
-            .order_by(DetectedObject.confidence_score.desc())
-            .first()
-        )
-        if best:
+        ts = float(frame.timestamp_seconds) if frame.timestamp_seconds is not None else 0.0
+        balls = by_frame_number[frame.frame_number]["balls"]
+        if balls:
             ball_positions.append({
                 "frame_number": frame.frame_number,
-                "timestamp_seconds": float(frame.timestamp_seconds) if frame.timestamp_seconds is not None else 0.0,
-                "x": best.bbox_x + best.bbox_width / 2,
-                "y": best.bbox_y + best.bbox_height / 2,
+                "timestamp_seconds": ts,
+                "x": balls[0]["x"],
+                "y": balls[0]["y"],
             })
+        frames_by_number[frame.frame_number] = {
+            "timestamp_seconds": ts,
+            "persons": by_frame_number[frame.frame_number]["persons"],
+            "balls": balls,
+        }
 
-    events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frames[0].width)
+    shot_events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frame_width)
+    missed_shots = [e for e in shot_events if not e["event_details"]["made"]]
+    rebound_events = detect_rebounds(missed_shots, frames_by_number, frame_width)
+    all_events = shot_events + rebound_events
 
-    # Re-running analysis replaces the previous shot events rather than appending.
-    db.query(GameEvent).filter(GameEvent.game_id == game_id, GameEvent.event_type == "shot").delete()
-    for e in events:
+    # Re-running analysis replaces the previous shot/rebound events rather than appending.
+    db.query(GameEvent).filter(
+        GameEvent.game_id == game_id, GameEvent.event_type.in_(["shot", "rebound"])
+    ).delete(synchronize_session=False)
+    for e in all_events:
         db.add(GameEvent(game_id=game_id, **e))
 
-    game.total_shots = len(events)
-    game.made_shots = sum(1 for e in events if e["event_details"]["made"])
+    game.total_shots = len(shot_events)
+    game.made_shots = sum(1 for e in shot_events if e["event_details"]["made"])
+    game.total_rebounds = len(rebound_events)
     db.commit()
 
-    return {"total_shots": game.total_shots, "made_shots": game.made_shots, "events": events}
+    return {
+        "total_shots": game.total_shots,
+        "made_shots": game.made_shots,
+        "total_rebounds": game.total_rebounds,
+        "events": all_events,
+    }
 
 
 @app.get("/api/games/{game_id}/events")

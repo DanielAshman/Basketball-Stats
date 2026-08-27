@@ -134,6 +134,7 @@ export default function FrameViewer({ game, onGameUpdated }) {
             >
               <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-black/70 px-1 text-xs text-white">
                 {d.object_type} {Math.round(d.confidence_score * 100)}%
+                {d.estimated_jersey_number != null && ` · #${d.estimated_jersey_number}`}
               </span>
             </div>
           ))}

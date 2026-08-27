@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from database import Base, SessionLocal, engine, get_db
 from models import DetectedObject, Frame, Game, GameEvent
 from services.frame_extraction import extract_frames
+from services.jersey_ocr import read_jersey_number
 from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
 from services.vision_service import detect_objects, get_model
@@ -48,6 +49,8 @@ Base.metadata.create_all(bind=engine)
 with engine.begin() as conn:
     conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS hoop_x INT"))
     conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS hoop_y INT"))
+    conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS estimated_jersey_number INT"))
+    conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS jersey_confidence NUMERIC(5,3)"))
 
 
 class HoopPosition(BaseModel):
@@ -183,6 +186,8 @@ async def get_frame_detections(game_id: uuid.UUID, frame_number: int, db: Sessio
                 "bbox_y": o.bbox_y,
                 "bbox_width": o.bbox_width,
                 "bbox_height": o.bbox_height,
+                "estimated_jersey_number": o.estimated_jersey_number,
+                "jersey_confidence": float(o.jersey_confidence) if o.jersey_confidence is not None else None,
             }
             for o in objects
         ],
@@ -346,7 +351,14 @@ def process_video_task(game_id: str, video_path: str):
         detection_count = 0
         for frame_row in frame_rows:
             for det in detect_objects(frame_row.local_file_path):
-                db.add(DetectedObject(frame_id=frame_row.id, **det))
+                obj = DetectedObject(frame_id=frame_row.id, **det)
+                if det["object_type"] == "person":
+                    number, confidence = read_jersey_number(
+                        frame_row.local_file_path, det["bbox_x"], det["bbox_y"], det["bbox_width"], det["bbox_height"]
+                    )
+                    obj.estimated_jersey_number = number
+                    obj.jersey_confidence = confidence
+                db.add(obj)
                 detection_count += 1
             frame_row.processed_at = datetime.utcnow()
         db.commit()

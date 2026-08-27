@@ -66,6 +66,8 @@ class DetectedObject(Base):
     bbox_y = Column(Integer)
     bbox_width = Column(Integer)
     bbox_height = Column(Integer)
+    estimated_jersey_number = Column(Integer)
+    jersey_confidence = Column(Numeric(5, 3))
     created_at = Column(DateTime, server_default=func.now())
 
 

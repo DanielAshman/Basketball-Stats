@@ -21,14 +21,17 @@ _model_lock = threading.Lock()
 _inference_lock = threading.Lock()
 
 
+MODEL_NAME = "yolov8s.pt"
+
+
 def get_model() -> YOLO:
     global _model
     if _model is None:
         with _model_lock:
             if _model is None:
-                logger.info("Loading YOLOv8n model...")
-                _model = YOLO("yolov8n.pt")
-                logger.info("YOLOv8n model loaded")
+                logger.info(f"Loading {MODEL_NAME} model...")
+                _model = YOLO(MODEL_NAME)
+                logger.info(f"{MODEL_NAME} model loaded")
     return _model
 
 

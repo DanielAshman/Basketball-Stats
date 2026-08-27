@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { API_URL, analyzeGame, getFrameDetections, setHoopPosition } from '../api'
+import { API_URL, analyzeGame, assignPlayer, getFrameDetections, setHoopPosition } from '../api'
+import PlayerTagForm from './PlayerTagForm'
 
 const BOX_COLORS = {
   person: 'border-sky-400',
   sports_ball: 'border-orange-500',
 }
+
+const TAGGED_BOX_COLOR = 'border-green-500'
 
 export default function FrameViewer({ game, onGameUpdated }) {
   const { id: gameId, frame_count: frameCount, hoop_x, hoop_y } = game
@@ -14,21 +17,34 @@ export default function FrameViewer({ game, onGameUpdated }) {
   const [markingHoop, setMarkingHoop] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeError, setAnalyzeError] = useState(null)
+  const [taggingId, setTaggingId] = useState(null)
   const imgRef = useRef(null)
 
   useEffect(() => {
     setIndex(0)
+    setTaggingId(null)
   }, [gameId])
 
   useEffect(() => {
+    setTaggingId(null)
     if (!frameCount) return
-    getFrameDetections(gameId, index)
+    refreshDetections()
+  }, [gameId, index, frameCount])
+
+  function refreshDetections() {
+    return getFrameDetections(gameId, index)
       .then((d) => {
         setDetections(d.detections)
         setFrameSize({ width: d.width, height: d.height })
       })
       .catch(console.error)
-  }, [gameId, index, frameCount])
+  }
+
+  async function handleAssignPlayer(detectionId, jerseyNumber, playerName) {
+    await assignPlayer(detectionId, jerseyNumber, playerName)
+    setTaggingId(null)
+    await refreshDetections()
+  }
 
   async function handleImageClick(e) {
     if (!markingHoop || !imgRef.current || !frameSize) return
@@ -110,6 +126,10 @@ export default function FrameViewer({ game, onGameUpdated }) {
           can't detect a hoop on their own.
         </p>
       )}
+      <p className="text-sm text-neutral-500">
+        Click a blue (person) box to tag their jersey number — auto-read numbers (marked with{' '}
+        <span className="italic">?</span>) are unreliable and worth checking.
+      </p>
       {analyzeError && <p className="text-sm text-red-600">{analyzeError}</p>}
 
       <div className="relative inline-block">
@@ -121,23 +141,40 @@ export default function FrameViewer({ game, onGameUpdated }) {
           className={`max-w-full rounded border border-neutral-300 dark:border-neutral-600 ${markingHoop ? 'cursor-crosshair' : ''}`}
         />
         {frameSize &&
-          detections.map((d, i) => (
-            <div
-              key={i}
-              className={`absolute border-2 ${BOX_COLORS[d.object_type] ?? 'border-white'}`}
-              style={{
-                left: `${(d.bbox_x / frameSize.width) * 100}%`,
-                top: `${(d.bbox_y / frameSize.height) * 100}%`,
-                width: `${(d.bbox_width / frameSize.width) * 100}%`,
-                height: `${(d.bbox_height / frameSize.height) * 100}%`,
-              }}
-            >
-              <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-black/70 px-1 text-xs text-white">
-                {d.object_type} {Math.round(d.confidence_score * 100)}%
-                {d.estimated_jersey_number != null && ` · #${d.estimated_jersey_number}`}
-              </span>
-            </div>
-          ))}
+          detections.map((d) => {
+            const isPerson = d.object_type === 'person'
+            const isTagged = d.player_jersey_number != null
+            return (
+              <div
+                key={d.id}
+                onClick={(e) => {
+                  if (!isPerson) return
+                  e.stopPropagation()
+                  setTaggingId(d.id === taggingId ? null : d.id)
+                }}
+                className={`absolute border-2 ${isTagged ? TAGGED_BOX_COLOR : BOX_COLORS[d.object_type] ?? 'border-white'} ${
+                  isPerson ? 'cursor-pointer' : ''
+                }`}
+                style={{
+                  left: `${(d.bbox_x / frameSize.width) * 100}%`,
+                  top: `${(d.bbox_y / frameSize.height) * 100}%`,
+                  width: `${(d.bbox_width / frameSize.width) * 100}%`,
+                  height: `${(d.bbox_height / frameSize.height) * 100}%`,
+                }}
+              >
+                <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-black/70 px-1 text-xs text-white">
+                  {isTagged
+                    ? `#${d.player_jersey_number}${d.player_name ? ` ${d.player_name}` : ''}`
+                    : `${d.object_type} ${Math.round(d.confidence_score * 100)}%${
+                        d.estimated_jersey_number != null ? ` · #${d.estimated_jersey_number}?` : ''
+                      }`}
+                </span>
+                {taggingId === d.id && (
+                  <PlayerTagForm detection={d} onSave={handleAssignPlayer} onCancel={() => setTaggingId(null)} />
+                )}
+              </div>
+            )
+          })}
         {frameSize && hoopMarked && (
           <div
             className="absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-red-500"

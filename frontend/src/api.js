@@ -33,3 +33,11 @@ export async function analyzeGame(gameId) {
   const { data } = await api.post(`/api/games/${gameId}/analyze`)
   return data
 }
+
+export async function assignPlayer(detectionId, jerseyNumber, playerName) {
+  const { data } = await api.post(`/api/detections/${detectionId}/player`, {
+    jersey_number: jerseyNumber,
+    player_name: playerName || null,
+  })
+  return data
+}

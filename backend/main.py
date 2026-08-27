@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
-from models import DetectedObject, Frame, Game, GameEvent
+from models import DetectedObject, Frame, Game, GameEvent, Player
 from services.frame_extraction import extract_frames
 from services.jersey_ocr import read_jersey_number
 from services.rebound_detection import detect_rebounds
@@ -51,11 +51,17 @@ with engine.begin() as conn:
     conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS hoop_y INT"))
     conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS estimated_jersey_number INT"))
     conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS jersey_confidence NUMERIC(5,3)"))
+    conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS player_id UUID REFERENCES players(id)"))
 
 
 class HoopPosition(BaseModel):
     x: int
     y: int
+
+
+class PlayerAssignment(BaseModel):
+    jersey_number: int
+    player_name: str | None = None
 
 
 @app.on_event("startup")
@@ -175,11 +181,15 @@ async def get_frame_detections(game_id: uuid.UUID, frame_number: int, db: Sessio
         raise HTTPException(status_code=404, detail="Frame not found")
 
     objects = db.query(DetectedObject).filter(DetectedObject.frame_id == frame.id).all()
+    player_ids = {o.player_id for o in objects if o.player_id is not None}
+    players = {p.id: p for p in db.query(Player).filter(Player.id.in_(player_ids)).all()} if player_ids else {}
+
     return {
         "width": frame.width,
         "height": frame.height,
         "detections": [
             {
+                "id": str(o.id),
                 "object_type": o.object_type,
                 "confidence_score": float(o.confidence_score) if o.confidence_score is not None else None,
                 "bbox_x": o.bbox_x,
@@ -188,9 +198,44 @@ async def get_frame_detections(game_id: uuid.UUID, frame_number: int, db: Sessio
                 "bbox_height": o.bbox_height,
                 "estimated_jersey_number": o.estimated_jersey_number,
                 "jersey_confidence": float(o.jersey_confidence) if o.jersey_confidence is not None else None,
+                "player_id": str(o.player_id) if o.player_id is not None else None,
+                "player_jersey_number": players[o.player_id].jersey_number if o.player_id in players else None,
+                "player_name": players[o.player_id].player_name if o.player_id in players else None,
             }
             for o in objects
         ],
+    }
+
+
+@app.post("/api/detections/{detection_id}/player")
+async def assign_player(detection_id: uuid.UUID, assignment: PlayerAssignment, db: Session = Depends(get_db)):
+    """Manually assign (or correct) which player a detected person is - OCR's
+    guess (jersey_ocr.py) is unreliable enough that this is the primary path
+    to usable per-player data, not a rare fallback."""
+    detection = db.query(DetectedObject).filter(DetectedObject.id == detection_id).first()
+    if not detection:
+        raise HTTPException(status_code=404, detail="Detection not found")
+    if detection.object_type != "person":
+        raise HTTPException(status_code=400, detail="Only person detections can be assigned a player")
+
+    player = db.query(Player).filter(Player.jersey_number == assignment.jersey_number).first()
+    if not player:
+        player = Player(jersey_number=assignment.jersey_number, player_name=assignment.player_name)
+        db.add(player)
+        db.commit()
+        db.refresh(player)
+    elif assignment.player_name and not player.player_name:
+        player.player_name = assignment.player_name
+        db.commit()
+
+    detection.player_id = player.id
+    db.commit()
+
+    return {
+        "detection_id": str(detection_id),
+        "player_id": str(player.id),
+        "player_jersey_number": player.jersey_number,
+        "player_name": player.player_name,
     }
 
 

@@ -55,6 +55,16 @@ class Frame(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class Player(Base):
+    __tablename__ = "players"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    jersey_number = Column(Integer, nullable=False)
+    player_name = Column(String(255))
+    team = Column(String(100))
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class DetectedObject(Base):
     __tablename__ = "detected_objects"
 
@@ -68,6 +78,9 @@ class DetectedObject(Base):
     bbox_height = Column(Integer)
     estimated_jersey_number = Column(Integer)
     jersey_confidence = Column(Numeric(5, 3))
+    # Manually assigned by a coach correcting the (unreliable) OCR guess -
+    # see jersey_ocr.py. Never set automatically.
+    player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"))
     created_at = Column(DateTime, server_default=func.now())
 
 

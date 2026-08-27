@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 
@@ -78,8 +79,19 @@ async def create_game(
     except ValueError:
         raise HTTPException(status_code=422, detail="date_played must be YYYY-MM-DD")
 
+    game = Game(
+        title=title,
+        date_played=parsed_date,
+        processing_status="pending",
+    )
+    db.add(game)
+    db.commit()
+    db.refresh(game)
+
+    # Filename includes the game id so two uploads sharing a title/date never
+    # collide on the same path on disk.
     safe_title = "".join(c if c.isalnum() or c in " _-" else "_" for c in title).replace(" ", "_")
-    video_filename = f"{safe_title}_{date_played}{Path(video.filename or '').suffix or '.mp4'}"
+    video_filename = f"{safe_title}_{date_played}_{game.id}{Path(video.filename or '').suffix or '.mp4'}"
     video_path = VIDEOS_PATH / video_filename
 
     with open(video_path, "wb") as buffer:
@@ -87,15 +99,8 @@ async def create_game(
 
     logger.info(f"Video saved: {video_path}")
 
-    game = Game(
-        title=title,
-        date_played=parsed_date,
-        video_file_path=str(video_path),
-        processing_status="pending",
-    )
-    db.add(game)
+    game.video_file_path = str(video_path)
     db.commit()
-    db.refresh(game)
 
     background_tasks.add_task(process_video_task, str(game.id), str(video_path))
 
@@ -114,7 +119,7 @@ async def list_games(db: Session = Depends(get_db)):
 
 
 @app.get("/api/games/{game_id}")
-async def get_game(game_id: str, db: Session = Depends(get_db)):
+async def get_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
     game = db.query(Game).filter(Game.id == game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -122,7 +127,7 @@ async def get_game(game_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/games/{game_id}/frames")
-async def list_frames(game_id: str, db: Session = Depends(get_db)):
+async def list_frames(game_id: uuid.UUID, db: Session = Depends(get_db)):
     frames = (
         db.query(Frame)
         .filter(Frame.game_id == game_id)
@@ -144,19 +149,19 @@ async def list_frames(game_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/games/{game_id}/frames/{frame_number}/image")
-async def get_frame_image(game_id: str, frame_number: int, db: Session = Depends(get_db)):
+async def get_frame_image(game_id: uuid.UUID, frame_number: int, db: Session = Depends(get_db)):
     frame = (
         db.query(Frame)
         .filter(Frame.game_id == game_id, Frame.frame_number == frame_number)
         .first()
     )
-    if not frame or not frame.local_file_path:
+    if not frame or not frame.local_file_path or not os.path.exists(frame.local_file_path):
         raise HTTPException(status_code=404, detail="Frame not found")
     return FileResponse(frame.local_file_path)
 
 
 @app.get("/api/games/{game_id}/frames/{frame_number}/detections")
-async def get_frame_detections(game_id: str, frame_number: int, db: Session = Depends(get_db)):
+async def get_frame_detections(game_id: uuid.UUID, frame_number: int, db: Session = Depends(get_db)):
     frame = (
         db.query(Frame)
         .filter(Frame.game_id == game_id, Frame.frame_number == frame_number)
@@ -184,7 +189,7 @@ async def get_frame_detections(game_id: str, frame_number: int, db: Session = De
 
 
 @app.post("/api/games/{game_id}/hoop")
-async def set_hoop_position(game_id: str, hoop: HoopPosition, db: Session = Depends(get_db)):
+async def set_hoop_position(game_id: uuid.UUID, hoop: HoopPosition, db: Session = Depends(get_db)):
     game = db.query(Game).filter(Game.id == game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -195,7 +200,7 @@ async def set_hoop_position(game_id: str, hoop: HoopPosition, db: Session = Depe
 
 
 @app.post("/api/games/{game_id}/analyze")
-async def analyze_game(game_id: str, db: Session = Depends(get_db)):
+async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
     """Run shot detection using the marked hoop position and stored ball detections."""
     game = db.query(Game).filter(Game.id == game_id).first()
     if not game:
@@ -240,7 +245,7 @@ async def analyze_game(game_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/api/games/{game_id}/events")
-async def list_events(game_id: str, db: Session = Depends(get_db)):
+async def list_events(game_id: uuid.UUID, db: Session = Depends(get_db)):
     events = db.query(GameEvent).filter(GameEvent.game_id == game_id).order_by(GameEvent.start_frame).all()
     return {
         "events": [
@@ -298,7 +303,7 @@ def process_video_task(game_id: str, video_path: str):
         frame_rows = [Frame(game_id=game_id, **f) for f in frames]
         db.add_all(frame_rows)
         game.frame_count = len(frames)
-        game.video_duration_seconds = int(duration_seconds) if duration_seconds else None
+        game.video_duration_seconds = int(duration_seconds) if duration_seconds is not None else None
         db.commit()
 
         game.processing_status = "detecting"

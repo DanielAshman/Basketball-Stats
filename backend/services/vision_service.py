@@ -1,4 +1,5 @@
 import logging
+import threading
 
 from ultralytics import YOLO
 
@@ -11,21 +12,31 @@ TRACKED_CLASSES = {0: "person", 32: "sports_ball"}
 CONFIDENCE_THRESHOLD = 0.25
 
 _model = None
+_model_lock = threading.Lock()
+
+# Uploads run as FastAPI BackgroundTasks on a threadpool, so two uploads
+# processed close together can call into the model concurrently. Ultralytics'
+# Predictor isn't documented as thread-safe, so inference calls (not just
+# model creation) are serialized through this lock.
+_inference_lock = threading.Lock()
 
 
 def get_model() -> YOLO:
     global _model
     if _model is None:
-        logger.info("Loading YOLOv8n model...")
-        _model = YOLO("yolov8n.pt")
-        logger.info("YOLOv8n model loaded")
+        with _model_lock:
+            if _model is None:
+                logger.info("Loading YOLOv8n model...")
+                _model = YOLO("yolov8n.pt")
+                logger.info("YOLOv8n model loaded")
     return _model
 
 
 def detect_objects(frame_path: str):
     """Run YOLOv8 on a frame and return basketball-relevant detections."""
     model = get_model()
-    results = model(frame_path, verbose=False)
+    with _inference_lock:
+        results = model(frame_path, verbose=False)
 
     detections = []
     for result in results:

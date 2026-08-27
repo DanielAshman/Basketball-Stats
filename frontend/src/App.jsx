@@ -24,7 +24,7 @@ function App() {
       <h1 className="text-2xl font-bold">Basketball Analytics</h1>
       <UploadForm onUploaded={refresh} />
       <GamesList games={games} onRefresh={refresh} selectedGameId={selectedGameId} onSelect={setSelectedGameId} />
-      {selectedGame && <FrameViewer gameId={selectedGame.id} frameCount={selectedGame.frame_count} />}
+      {selectedGame && <FrameViewer game={selectedGame} onGameUpdated={refresh} />}
     </div>
   )
 }

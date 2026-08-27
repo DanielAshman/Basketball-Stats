@@ -23,3 +23,13 @@ export async function getFrameDetections(gameId, frameNumber) {
   const { data } = await api.get(`/api/games/${gameId}/frames/${frameNumber}/detections`)
   return data
 }
+
+export async function setHoopPosition(gameId, x, y) {
+  const { data } = await api.post(`/api/games/${gameId}/hoop`, { x, y })
+  return data
+}
+
+export async function analyzeGame(gameId) {
+  const { data } = await api.post(`/api/games/${gameId}/analyze`)
+  return data
+}

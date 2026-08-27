@@ -6,11 +6,14 @@ from pathlib import Path
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
-from models import DetectedObject, Frame, Game
+from models import DetectedObject, Frame, Game, GameEvent
 from services.frame_extraction import extract_frames
+from services.shot_detection import detect_shots
 from services.vision_service import detect_objects, get_model
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +38,19 @@ FRAMES_PATH.mkdir(parents=True, exist_ok=True)
 # no-op once they exist, and lets `models.py` stay the source of truth for
 # columns the ORM actually uses.
 Base.metadata.create_all(bind=engine)
+
+# `games` predates the hoop_x/hoop_y columns (added for Week 3 shot
+# detection) and was already created by docker/init.sql, so create_all()
+# above won't add them - do it explicitly instead of pulling in Alembic for
+# a single-developer local project.
+with engine.begin() as conn:
+    conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS hoop_x INT"))
+    conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS hoop_y INT"))
+
+
+class HoopPosition(BaseModel):
+    x: int
+    y: int
 
 
 @app.on_event("startup")
@@ -167,6 +183,81 @@ async def get_frame_detections(game_id: str, frame_number: int, db: Session = De
     }
 
 
+@app.post("/api/games/{game_id}/hoop")
+async def set_hoop_position(game_id: str, hoop: HoopPosition, db: Session = Depends(get_db)):
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game.hoop_x = hoop.x
+    game.hoop_y = hoop.y
+    db.commit()
+    return serialize_game(game)
+
+
+@app.post("/api/games/{game_id}/analyze")
+async def analyze_game(game_id: str, db: Session = Depends(get_db)):
+    """Run shot detection using the marked hoop position and stored ball detections."""
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    if game.processing_status != "completed":
+        raise HTTPException(status_code=400, detail="Game must finish processing before analyzing")
+    if game.hoop_x is None or game.hoop_y is None:
+        raise HTTPException(status_code=400, detail="Mark the hoop position before analyzing")
+
+    frames = db.query(Frame).filter(Frame.game_id == game_id).order_by(Frame.frame_number).all()
+    if not frames:
+        raise HTTPException(status_code=400, detail="No frames to analyze")
+
+    ball_positions = []
+    for frame in frames:
+        best = (
+            db.query(DetectedObject)
+            .filter(DetectedObject.frame_id == frame.id, DetectedObject.object_type == "sports_ball")
+            .order_by(DetectedObject.confidence_score.desc())
+            .first()
+        )
+        if best:
+            ball_positions.append({
+                "frame_number": frame.frame_number,
+                "timestamp_seconds": float(frame.timestamp_seconds) if frame.timestamp_seconds is not None else 0.0,
+                "x": best.bbox_x + best.bbox_width / 2,
+                "y": best.bbox_y + best.bbox_height / 2,
+            })
+
+    events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frames[0].width)
+
+    # Re-running analysis replaces the previous shot events rather than appending.
+    db.query(GameEvent).filter(GameEvent.game_id == game_id, GameEvent.event_type == "shot").delete()
+    for e in events:
+        db.add(GameEvent(game_id=game_id, **e))
+
+    game.total_shots = len(events)
+    game.made_shots = sum(1 for e in events if e["event_details"]["made"])
+    db.commit()
+
+    return {"total_shots": game.total_shots, "made_shots": game.made_shots, "events": events}
+
+
+@app.get("/api/games/{game_id}/events")
+async def list_events(game_id: str, db: Session = Depends(get_db)):
+    events = db.query(GameEvent).filter(GameEvent.game_id == game_id).order_by(GameEvent.start_frame).all()
+    return {
+        "events": [
+            {
+                "event_type": e.event_type,
+                "start_frame": e.start_frame,
+                "end_frame": e.end_frame,
+                "start_timestamp": float(e.start_timestamp) if e.start_timestamp is not None else None,
+                "end_timestamp": float(e.end_timestamp) if e.end_timestamp is not None else None,
+                "confidence_score": float(e.confidence_score) if e.confidence_score is not None else None,
+                "event_details": e.event_details,
+            }
+            for e in events
+        ]
+    }
+
+
 def serialize_game(game: Game) -> dict:
     return {
         "id": str(game.id),
@@ -175,6 +266,8 @@ def serialize_game(game: Game) -> dict:
         "processing_status": game.processing_status,
         "processing_error": game.processing_error,
         "frame_count": game.frame_count,
+        "hoop_x": game.hoop_x,
+        "hoop_y": game.hoop_y,
         "video_duration_seconds": game.video_duration_seconds,
         "total_shots": game.total_shots,
         "made_shots": game.made_shots,

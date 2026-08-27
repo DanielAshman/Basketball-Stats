@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
 from database import Base
@@ -25,6 +25,11 @@ class Game(Base):
 
     home_team = Column(String(100))
     away_team = Column(String(100))
+
+    # Manually marked by the coach in the frame viewer - stock YOLOv8 (COCO
+    # weights) has no hoop class, so hoop position can't be auto-detected.
+    hoop_x = Column(Integer)
+    hoop_y = Column(Integer)
 
     total_shots = Column(Integer, default=0)
     made_shots = Column(Integer, default=0)
@@ -61,4 +66,19 @@ class DetectedObject(Base):
     bbox_y = Column(Integer)
     bbox_width = Column(Integer)
     bbox_height = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class GameEvent(Base):
+    __tablename__ = "game_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+    event_type = Column(String(50))
+    start_frame = Column(Integer)
+    end_frame = Column(Integer)
+    start_timestamp = Column(Numeric(10, 2))
+    end_timestamp = Column(Numeric(10, 2))
+    event_details = Column(JSONB)
+    confidence_score = Column(Numeric(5, 3))
     created_at = Column(DateTime, server_default=func.now())

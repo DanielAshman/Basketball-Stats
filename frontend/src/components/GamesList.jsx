@@ -35,6 +35,7 @@ export default function GamesList({ games, onRefresh, selectedGameId, onSelect }
               <th className="py-2 pr-4">Date</th>
               <th className="py-2 pr-4">Status</th>
               <th className="py-2 pr-4">Frames</th>
+              <th className="py-2 pr-4">Shots</th>
             </tr>
           </thead>
           <tbody>
@@ -59,6 +60,9 @@ export default function GamesList({ games, onRefresh, selectedGameId, onSelect }
                   )}
                 </td>
                 <td className="py-2 pr-4">{g.frame_count ?? '—'}</td>
+                <td className="py-2 pr-4">
+                  {g.total_shots ? `${g.made_shots}/${g.total_shots}` : '—'}
+                </td>
               </tr>
             ))}
           </tbody>

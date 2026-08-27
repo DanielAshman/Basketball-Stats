@@ -15,6 +15,7 @@ from database import Base, SessionLocal, engine, get_db
 from models import DetectedObject, Frame, Game, GameEvent, Player
 from services.frame_extraction import extract_frames
 from services.jersey_ocr import read_jersey_number
+from services.player_attribution import closest_person_to_ball, find_shooter_reference_point, proximity_radius
 from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
 from services.vision_service import detect_objects, get_model
@@ -273,9 +274,11 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
     for d in detections:
         frame_number = frame_by_id[d.frame_id].frame_number
         center = {
+            "id": str(d.id),
             "x": d.bbox_x + d.bbox_width / 2,
             "y": d.bbox_y + d.bbox_height / 2,
             "confidence": float(d.confidence_score) if d.confidence_score is not None else 0.0,
+            "player_id": str(d.player_id) if d.player_id is not None else None,
         }
         if d.object_type == "sports_ball":
             by_frame_number[frame_number]["balls"].append(center)
@@ -303,6 +306,27 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
         }
 
     shot_events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frame_width)
+
+    # Attribute each shot to whoever was nearest the ball just before its
+    # approach to the hoop began - not at the approach itself, where the
+    # shooter who released it is normally already long gone from that spot
+    # (verified: using the approach's own start frame here found nobody for
+    # a real shot, because the last tracked ball position before it was 2
+    # frames earlier and well outside the hoop-proximity radius). Only
+    # resolves to an actual player if a coach has already tagged that
+    # specific detection.
+    radius = proximity_radius(frame_width)
+    for shot in shot_events:
+        reference = find_shooter_reference_point(ball_positions, shot["start_frame"])
+        reference_frame_data = frames_by_number.get(reference["frame_number"]) if reference else None
+        shooter = (
+            closest_person_to_ball(reference_frame_data["persons"], reference["x"], reference["y"], radius)
+            if reference_frame_data
+            else None
+        )
+        shot["event_details"]["shooter_detection_id"] = shooter["id"] if shooter else None
+        shot["event_details"]["shooter_player_id"] = shooter.get("player_id") if shooter else None
+
     missed_shots = [e for e in shot_events if not e["event_details"]["made"]]
     rebound_events = detect_rebounds(missed_shots, frames_by_number, frame_width)
     all_events = shot_events + rebound_events
@@ -344,6 +368,52 @@ async def list_events(game_id: uuid.UUID, db: Session = Depends(get_db)):
             for e in events
         ]
     }
+
+
+@app.get("/api/games/{game_id}/players/stats")
+async def get_player_stats(game_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Per-player shot/rebound totals, built from event_details.shooter_player_id
+    and .rebounder_player_id - only populated for events where a coach has
+    already tagged the relevant detection (see analyze_game)."""
+    events = db.query(GameEvent).filter(GameEvent.game_id == game_id).all()
+
+    stats = {}
+    for e in events:
+        details = e.event_details or {}
+        if e.event_type == "shot":
+            player_id = details.get("shooter_player_id")
+            if not player_id:
+                continue
+            s = stats.setdefault(player_id, {"shots_attempted": 0, "shots_made": 0, "rebounds": 0})
+            s["shots_attempted"] += 1
+            if details.get("made"):
+                s["shots_made"] += 1
+        elif e.event_type == "rebound":
+            player_id = details.get("rebounder_player_id")
+            if not player_id:
+                continue
+            s = stats.setdefault(player_id, {"shots_attempted": 0, "shots_made": 0, "rebounds": 0})
+            s["rebounds"] += 1
+
+    if not stats:
+        return {"players": []}
+
+    players = {
+        str(p.id): p
+        for p in db.query(Player).filter(Player.id.in_([uuid.UUID(pid) for pid in stats.keys()])).all()
+    }
+
+    result = [
+        {
+            "player_id": player_id,
+            "jersey_number": players[player_id].jersey_number if player_id in players else None,
+            "player_name": players[player_id].player_name if player_id in players else None,
+            **totals,
+        }
+        for player_id, totals in stats.items()
+    ]
+    result.sort(key=lambda r: r["jersey_number"] if r["jersey_number"] is not None else -1)
+    return {"players": result}
 
 
 def serialize_game(game: Game) -> dict:

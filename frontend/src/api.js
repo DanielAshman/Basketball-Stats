@@ -41,3 +41,8 @@ export async function assignPlayer(detectionId, jerseyNumber, playerName) {
   })
   return data
 }
+
+export async function getPlayerStats(gameId) {
+  const { data } = await api.get(`/api/games/${gameId}/players/stats`)
+  return data.players
+}

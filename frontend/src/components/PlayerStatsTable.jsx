@@ -1,7 +1,12 @@
 import { useEffect, useState } from 'react'
 import { getPlayerStats } from '../api'
 
-export default function PlayerStatsTable({ gameId, refreshKey }) {
+const DEFAULT_EMPTY_MESSAGE =
+  "No shots or rebounds are attributed to a tagged player yet. Shot/rebound attribution only " +
+  "resolves to a player if you've tagged the exact person detection at that moment — tag more " +
+  'frames in the viewer above, then re-run Analyze.'
+
+export default function PlayerStatsTable({ gameId, refreshKey, emptyMessage }) {
   const [players, setPlayers] = useState([])
   const [loaded, setLoaded] = useState(false)
 
@@ -20,11 +25,7 @@ export default function PlayerStatsTable({ gameId, refreshKey }) {
     return (
       <div className="flex flex-col gap-1 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
         <h2 className="text-lg font-semibold">Player Stats</h2>
-        <p className="text-sm text-neutral-500">
-          No shots or rebounds are attributed to a tagged player yet. Shot/rebound attribution only
-          resolves to a player if you've tagged the exact person detection at that moment — tag more
-          frames in the viewer above, then re-run Analyze.
-        </p>
+        <p className="text-sm text-neutral-500">{emptyMessage ?? DEFAULT_EMPTY_MESSAGE}</p>
       </div>
     )
   }
@@ -38,6 +39,8 @@ export default function PlayerStatsTable({ gameId, refreshKey }) {
             <th className="py-2 pr-4">Player</th>
             <th className="py-2 pr-4">Shots</th>
             <th className="py-2 pr-4">Rebounds</th>
+            <th className="py-2 pr-4">Turnovers</th>
+            <th className="py-2 pr-4">Assists</th>
           </tr>
         </thead>
         <tbody>
@@ -51,6 +54,8 @@ export default function PlayerStatsTable({ gameId, refreshKey }) {
                 {p.shots_made}/{p.shots_attempted}
               </td>
               <td className="py-2 pr-4">{p.rebounds}</td>
+              <td className="py-2 pr-4">{p.turnovers}</td>
+              <td className="py-2 pr-4">{p.assists}</td>
             </tr>
           ))}
         </tbody>

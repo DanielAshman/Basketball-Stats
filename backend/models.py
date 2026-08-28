@@ -26,6 +26,11 @@ class Game(Base):
     home_team = Column(String(100))
     away_team = Column(String(100))
 
+    # "video" (default) processes an uploaded recording through the vision
+    # pipeline; "manual" is a live-entry game with no video at all - a coach
+    # taps stats in during play (see /api/games/manual and manual_events.py).
+    entry_mode = Column(String(20), default="video")
+
     # Manually marked by the coach in the frame viewer - stock YOLOv8 (COCO
     # weights) has no hoop class, so hoop position can't be auto-detected.
     hoop_x = Column(Integer)
@@ -96,4 +101,9 @@ class GameEvent(Base):
     end_timestamp = Column(Numeric(10, 2))
     event_details = Column(JSONB)
     confidence_score = Column(Numeric(5, 3))
+    # Set directly for manual entries (the coach picks the player). Video-
+    # derived shot/rebound events instead carry shooter_player_id /
+    # rebounder_player_id inside event_details, since attribution there is a
+    # guess resolved at analyze time, not a direct assignment.
+    player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"))
     created_at = Column(DateTime, server_default=func.now())

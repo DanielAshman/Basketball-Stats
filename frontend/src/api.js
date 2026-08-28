@@ -46,3 +46,40 @@ export async function getPlayerStats(gameId) {
   const { data } = await api.get(`/api/games/${gameId}/players/stats`)
   return data.players
 }
+
+export async function createManualGame({ title, datePlayed, homeTeam, awayTeam }) {
+  const { data } = await api.post('/api/games/manual', {
+    title,
+    date_played: datePlayed,
+    home_team: homeTeam || null,
+    away_team: awayTeam || null,
+  })
+  return data
+}
+
+export async function createOrFindPlayer(jerseyNumber, playerName) {
+  const { data } = await api.post('/api/players', {
+    jersey_number: jerseyNumber,
+    player_name: playerName || null,
+  })
+  return data
+}
+
+export async function recordManualEvent(gameId, playerId, eventType, made) {
+  const { data } = await api.post(`/api/games/${gameId}/manual-events`, {
+    player_id: playerId,
+    event_type: eventType,
+    made: made ?? null,
+  })
+  return data
+}
+
+export async function listManualEvents(gameId) {
+  const { data } = await api.get(`/api/games/${gameId}/manual-events`)
+  return data.events
+}
+
+export async function deleteManualEvent(gameId, eventId) {
+  const { data } = await api.delete(`/api/games/${gameId}/manual-events/${eventId}`)
+  return data
+}

@@ -1,38 +1,32 @@
-import { useCallback, useEffect, useState } from 'react'
-import { listGames } from './api'
-import UploadForm from './components/UploadForm'
-import GamesList from './components/GamesList'
-import FrameViewer from './components/FrameViewer'
-import PlayerStatsTable from './components/PlayerStatsTable'
+import { NavLink, Route, Routes } from 'react-router-dom'
+import VideoDashboard from './pages/VideoDashboard'
+import ManualEntryPage from './pages/ManualEntryPage'
 import './App.css'
 
+const navLinkClass = ({ isActive }) =>
+  `rounded px-3 py-1.5 text-sm font-medium ${
+    isActive ? 'bg-orange-600 text-white' : 'border border-neutral-300 dark:border-neutral-600'
+  }`
+
 function App() {
-  const [games, setGames] = useState([])
-  const [selectedGameId, setSelectedGameId] = useState(null)
-  const [statsRefreshKey, setStatsRefreshKey] = useState(0)
-
-  const refresh = useCallback(() => {
-    listGames().then(setGames).catch(console.error)
-  }, [])
-
-  const handleGameUpdated = useCallback(() => {
-    refresh()
-    setStatsRefreshKey((k) => k + 1)
-  }, [refresh])
-
-  useEffect(() => {
-    refresh()
-  }, [refresh])
-
-  const selectedGame = games.find((g) => g.id === selectedGameId)
-
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6 p-6">
-      <h1 className="text-2xl font-bold">Basketball Analytics</h1>
-      <UploadForm onUploaded={refresh} />
-      <GamesList games={games} onRefresh={refresh} selectedGameId={selectedGameId} onSelect={setSelectedGameId} />
-      {selectedGame && <FrameViewer game={selectedGame} onGameUpdated={handleGameUpdated} />}
-      {selectedGame && <PlayerStatsTable gameId={selectedGame.id} refreshKey={statsRefreshKey} />}
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Basketball Analytics</h1>
+        <nav className="flex gap-2">
+          <NavLink to="/" end className={navLinkClass}>
+            Video Upload
+          </NavLink>
+          <NavLink to="/manual" className={navLinkClass}>
+            Live Game Entry
+          </NavLink>
+        </nav>
+      </div>
+
+      <Routes>
+        <Route path="/" element={<VideoDashboard />} />
+        <Route path="/manual" element={<ManualEntryPage />} />
+      </Routes>
     </div>
   )
 }

@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
-from models import DetectedObject, Frame, Game, GameEvent, Player
+from models import DetectedObject, Frame, Game, GameEvent, Player, PoseKeypoint
 from services.player_migration import migrate_players
 from services.frame_extraction import extract_frames
 from services.jersey_ocr import read_jersey_number
@@ -559,11 +559,24 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
             if homography_result["success"]:
                 court_homography = homography_result["homography"]
 
-    # Build pose data list for pose-enhanced shot detection
-    # This would come from the pose detection step in process_video_task
-    # For now, we use ball positions only; pose data integration happens
-    # when the full pipeline is connected
-    pose_data_list = None  # TODO: integrate pose data from process_video_task
+    # Load stored pose data for pose-enhanced shot detection
+    pose_data_list = []
+    pose_rows = db.query(PoseKeypoint).filter(
+        PoseKeypoint.frame_id.in_([f.id for f in frames])
+    ).all()
+    for pose_row in pose_rows:
+        frame_number = next((f.frame_number for f in frames if f.id == pose_row.frame_id), None)
+        if frame_number is not None:
+            pose_data_list.append({
+                "frame_number": frame_number,
+                "track_id": pose_row.track_id,
+                "keypoints": pose_row.keypoints,
+                "bbox": [pose_row.bbox_x, pose_row.bbox_y,
+                         pose_row.bbox_x + pose_row.bbox_width,
+                         pose_row.bbox_y + pose_row.bbox_height],
+                "confidence_score": float(pose_row.confidence_score) if pose_row.confidence_score else 0.0,
+            })
+    pose_data_list.sort(key=lambda p: p["frame_number"])
 
     shot_events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frame_width, pose_data_list)
 
@@ -772,14 +785,27 @@ def process_video_task(game_id: str, video_path: str):
         logger.info(f"Running YOLO11 + OC-SORT detection on {len(frame_rows)} frames for game {game_id}")
         reset_tracker(get_model())
         detection_count = 0
-        pose_data_by_frame = {}
+        pose_count = 0
 
         for frame_row in frame_rows:
             detections = detect_objects(frame_row.local_file_path)
 
-            # Run pose estimation on the same frame
+            # Run pose estimation on the same frame and store in database
             pose_results = detect_pose(frame_row.local_file_path, detections)
-            pose_data_by_frame[frame_row.frame_number] = pose_results
+            for pose in pose_results:
+                keypoints_json = [[round(kp[0], 2), round(kp[1], 2), round(kp[2], 3)] for kp in pose["keypoints"]]
+                pose_row = PoseKeypoint(
+                    frame_id=frame_row.id,
+                    track_id=pose.get("track_id") or 0,
+                    keypoints=keypoints_json,
+                    confidence_score=round(pose.get("confidence_score", 0), 3),
+                    bbox_x=pose["bbox"][0],
+                    bbox_y=pose["bbox"][1],
+                    bbox_width=pose["bbox"][2] - pose["bbox"][0],
+                    bbox_height=pose["bbox"][3] - pose["bbox"][1],
+                )
+                db.add(pose_row)
+                pose_count += 1
 
             for det in detections:
                 obj = DetectedObject(frame_id=frame_row.id, **det)
@@ -793,6 +819,7 @@ def process_video_task(game_id: str, video_path: str):
                 detection_count += 1
             frame_row.processed_at = datetime.utcnow()
         db.commit()
+        logger.info(f"Stored {pose_count} pose keypoints for game {game_id}")
 
         # Detect court lines and compute homography for coordinate transformation
         court_homography = None

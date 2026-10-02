@@ -99,6 +99,26 @@ class DetectedObject(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class PoseKeypoint(Base):
+    __tablename__ = "pose_keypoints"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    frame_id = Column(UUID(as_uuid=True), ForeignKey("frames.id"), nullable=False)
+    # Track ID from OC-SORT, links pose to a specific player track
+    track_id = Column(Integer, nullable=False)
+    # COCO-format keypoints: list of [x, y, confidence] for 17 keypoints
+    # Stored as JSONB for flexibility (keypoints can be null if not detected)
+    keypoints = Column(JSONB, nullable=False)
+    # Overall detection confidence
+    confidence_score = Column(Numeric(5, 3))
+    # Bounding box of the person
+    bbox_x = Column(Integer)
+    bbox_y = Column(Integer)
+    bbox_width = Column(Integer)
+    bbox_height = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class GameEvent(Base):
     __tablename__ = "game_events"
 

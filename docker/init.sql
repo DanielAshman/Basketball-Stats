@@ -63,6 +63,20 @@ CREATE TABLE IF NOT EXISTS game_events (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
+-- Create pose keypoints table
+CREATE TABLE IF NOT EXISTS pose_keypoints (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  frame_id UUID NOT NULL REFERENCES frames(id),
+  track_id INT NOT NULL,
+  keypoints JSONB NOT NULL,
+  confidence_score DECIMAL(5,3),
+  bbox_x INT,
+  bbox_y INT,
+  bbox_width INT,
+  bbox_height INT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 -- Create indexes
 CREATE INDEX IF NOT EXISTS idx_games_status ON games(processing_status);
 CREATE INDEX IF NOT EXISTS idx_games_date ON games(date_played);
@@ -70,6 +84,8 @@ CREATE INDEX IF NOT EXISTS idx_frames_game ON frames(game_id);
 CREATE INDEX IF NOT EXISTS idx_detected_objects_frame ON detected_objects(frame_id);
 CREATE INDEX IF NOT EXISTS idx_game_events_game ON game_events(game_id);
 CREATE INDEX IF NOT EXISTS idx_game_events_type ON game_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_pose_keypoints_frame ON pose_keypoints(frame_id);
+CREATE INDEX IF NOT EXISTS idx_pose_keypoints_track ON pose_keypoints(track_id);
 
 -- Create users table (optional, for auth later)
 CREATE TABLE IF NOT EXISTS users (

@@ -7,9 +7,9 @@ python-multipart==0.0.6
 opencv-python==4.8.1.78
 numpy==1.24.3
 Pillow==10.0.1
-# Vision models (YOLOv8 - much better for local use than Google Cloud)
+# Vision models (YOLO11 - better accuracy than YOLOv8 for sports detection)
 ultralytics==8.4.129
-# Hungarian-algorithm matching used by ultralytics' ByteTrack (model.track()) -
+# Hungarian-algorithm matching used by ultralytics' trackers (model.track()) -
 # ultralytics auto-installs this at runtime if it's missing, which isn't safe
 # to rely on inside a container with no guaranteed outbound access; pin it.
 lap==0.5.13

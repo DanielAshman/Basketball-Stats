@@ -34,4 +34,9 @@ COPY . .
 # Create directories
 RUN mkdir -p /app/videos /app/data
 
+# Download YOLO11 models (detection + pose) at build time so they're baked
+# into the image and don't need to be downloaded on first request.
+# This adds ~100MB to the image but eliminates first-request latency.
+RUN python -c "from ultralytics import YOLO; YOLO('yolo11m.pt'); YOLO('yolo11m-pose.pt')" || echo "Model download failed - will retry on first request"
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

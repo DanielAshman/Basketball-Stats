@@ -20,7 +20,8 @@ from services.jersey_ocr import read_jersey_number
 from services.player_attribution import closest_person_to_ball, find_shooter_reference_point, proximity_radius
 from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
-from services.vision_service import detect_objects, get_model, reset_tracker
+from services.vision_service import detect_objects, detect_pose, get_model, get_pose_model, reset_tracker
+from services.court_detection import detect_court_lines, compute_homography, pixel_to_court_coords, is_three_point_shot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -549,7 +550,22 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
             "balls": balls,
         }
 
-    shot_events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frame_width)
+    # Detect court lines and compute homography for 2PT/3PT classification
+    court_homography = None
+    if frames:
+        court_result = detect_court_lines(frames[0].local_file_path)
+        if court_result["success"]:
+            homography_result = compute_homography(court_result)
+            if homography_result["success"]:
+                court_homography = homography_result["homography"]
+
+    # Build pose data list for pose-enhanced shot detection
+    # This would come from the pose detection step in process_video_task
+    # For now, we use ball positions only; pose data integration happens
+    # when the full pipeline is connected
+    pose_data_list = None  # TODO: integrate pose data from process_video_task
+
+    shot_events = detect_shots(ball_positions, game.hoop_x, game.hoop_y, frame_width, pose_data_list)
 
     # Attribute each shot to whoever was nearest the ball just before its
     # approach to the hoop began - not at the approach itself, where the
@@ -571,6 +587,24 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
         shot["event_details"]["shooter_detection_id"] = shooter["id"] if shooter else None
         shot["event_details"]["shooter_player_id"] = shooter.get("player_id") if shooter else None
 
+        # Add court coordinate classification if homography is available
+        if court_homography is not None and shooter:
+            shooter_x = shooter["x"]
+            shooter_y = shooter["y"]
+            court_coords = pixel_to_court_coords(shooter_x, shooter_y, court_homography)
+            if court_coords:
+                shot["event_details"]["shooter_court_x_ft"] = round(court_coords[0], 2)
+                shot["event_details"]["shooter_court_y_ft"] = round(court_coords[1], 2)
+                # Classify as 2PT or 3PT
+                hoop_court = pixel_to_court_coords(game.hoop_x, game.hoop_y, court_homography)
+                if hoop_court:
+                    if is_three_point_shot(court_coords[0], court_coords[1], hoop_court[0], hoop_court[1]):
+                        shot["event_details"]["shot_type"] = "3PT"
+                        shot["event_details"]["points"] = 3
+                    else:
+                        shot["event_details"]["shot_type"] = "2PT"
+                        shot["event_details"]["points"] = 2
+
     missed_shots = [e for e in shot_events if not e["event_details"]["made"]]
     rebound_events = detect_rebounds(missed_shots, frames_by_number, frame_width)
     all_events = shot_events + rebound_events
@@ -584,7 +618,12 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
 
     game.total_shots = len(shot_events)
     game.made_shots = sum(1 for e in shot_events if e["event_details"]["made"])
-    game.total_points = game.made_shots * 2
+    # Calculate total points: 2 for 2PT, 3 for 3PT (when court classification available)
+    game.total_points = sum(
+        e["event_details"].get("points", 2)
+        for e in shot_events
+        if e["event_details"]["made"]
+    )
     game.total_rebounds = len(rebound_events)
     db.commit()
 
@@ -730,11 +769,19 @@ def process_video_task(game_id: str, video_path: str):
         game.processing_status = "detecting"
         db.commit()
 
-        logger.info(f"Running YOLOv8 detection on {len(frame_rows)} frames for game {game_id}")
+        logger.info(f"Running YOLO11 + OC-SORT detection on {len(frame_rows)} frames for game {game_id}")
         reset_tracker(get_model())
         detection_count = 0
+        pose_data_by_frame = {}
+
         for frame_row in frame_rows:
-            for det in detect_objects(frame_row.local_file_path):
+            detections = detect_objects(frame_row.local_file_path)
+
+            # Run pose estimation on the same frame
+            pose_results = detect_pose(frame_row.local_file_path, detections)
+            pose_data_by_frame[frame_row.frame_number] = pose_results
+
+            for det in detections:
                 obj = DetectedObject(frame_id=frame_row.id, **det)
                 if det["object_type"] == "person":
                     number, confidence = read_jersey_number(
@@ -746,6 +793,21 @@ def process_video_task(game_id: str, video_path: str):
                 detection_count += 1
             frame_row.processed_at = datetime.utcnow()
         db.commit()
+
+        # Detect court lines and compute homography for coordinate transformation
+        court_homography = None
+        if frame_rows:
+            logger.info("Detecting court lines for coordinate transformation...")
+            court_result = detect_court_lines(frame_rows[0].local_file_path)
+            if court_result["success"]:
+                homography_result = compute_homography(court_result)
+                if homography_result["success"]:
+                    court_homography = homography_result["homography"]
+                    logger.info("Court lines detected - homography computed for 2PT/3PT classification")
+                else:
+                    logger.info("Court lines detected but homography computation failed")
+            else:
+                logger.info("Could not detect court lines - 2PT/3PT classification unavailable")
 
         game.processing_status = "completed"
         game.processing_completed_at = datetime.utcnow()

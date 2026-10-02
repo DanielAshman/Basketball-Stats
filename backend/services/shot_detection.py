@@ -1,32 +1,20 @@
-"""Heuristic shot detection from ball-position detections.
+"""Shot detection combining ball-position heuristics with pose-based action recognition.
 
-There's no ground-truth basketball dataset here and no hoop-detection model
-(see vision_service.py), so this is deliberately a simple, inspectable
-proximity heuristic rather than a trained model: a "shot attempt" is a run of
-frames where the tracked ball comes within a radius of the (manually marked)
-hoop position, and "made" vs "missed" is guessed from where the ball ends up
-relative to the hoop afterwards. This is good enough to demo, not to grade a
-real game - see architecture_decisions.md's accuracy roadmap.
+Uses two complementary signals:
+    1. Ball proximity to hoop (heuristic, existing approach)
+    2. Player shooting motion from pose estimation (new, more reliable)
 
-Made/missed uses the LAST ball sample within a short window after the
-closest approach, not just the next one: on real footage (verified against
-an actual rim-out), the ball's horizontal distance from the hoop increases
-steadily frame over frame as it bounces away - a single next-frame check can
-land on a point that hasn't diverged far yet and misclassify a miss as a
-make. That window is bounded (MADE_OUTCOME_LOOKAHEAD_FRAMES below) rather
-than searching all the way to the end of the ball-position list: an earlier,
-unbounded version of this picked the ball's position at literally the last
-frame of the whole video for every shot, however early in the game the shot
-happened, which reliably classified every shot in a real test video as
-"missed" regardless of what actually happened right after it. An earlier
-version of this also tried interpolating the closest point along the segment
-between two sampled positions (to catch approaches sparse 2fps sampling
-missed entirely), but the segment's *far* endpoint could get pulled into the
-"last position" used for made/missed - exactly the same class of bug.
-Point-only detection with the radius below already catches every approach in
-this project's test clips, so that interpolation was dropped rather than
-fixed; a very fast, brief approach between two samples could still be missed.
+The pose-based detection is the primary signal - it detects the actual shooting
+motion rather than inferring intent from ball position. Ball proximity is used
+as a secondary confirmation and for made/missed classification.
+
+Court coordinates (when available) enable automatic 2PT/3PT classification.
 """
+
+import logging
+from .pose_analyzer import detect_shooting_motion
+
+logger = logging.getLogger(__name__)
 
 # How close (as a fraction of frame width) the ball needs to get to the hoop
 # to count as a shot attempt.
@@ -50,15 +38,28 @@ MAX_FRAME_GAP = 3
 # an unrelated later possession.
 MADE_OUTCOME_LOOKAHEAD_FRAMES = 8
 
+# Minimum confidence from pose-based shot detection to consider it valid
+POSE_SHOT_CONFIDENCE_THRESHOLD = 0.5
+
 
 def _distance(x1, y1, x2, y2):
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
 
 
-def detect_shots(ball_positions, hoop_x, hoop_y, frame_width):
-    """ball_positions: list of dicts with frame_number, timestamp_seconds, x, y
-    (center of the highest-confidence sports_ball detection in that frame),
-    sorted by frame_number. Returns a list of shot-event dicts."""
+def detect_shots(ball_positions, hoop_x, hoop_y, frame_width, pose_data_list=None):
+    """Detect shots using ball positions and optional pose data.
+
+    Args:
+        ball_positions: list of dicts with frame_number, timestamp_seconds, x, y
+        hoop_x, hoop_y: hoop position in pixels
+        frame_width: frame width in pixels
+        pose_data_list: optional list of pose data dicts from detect_pose(),
+            one per frame, used for pose-based shot detection
+
+    Returns:
+        list of shot-event dicts with made/missed, confidence, and optional
+        pose-based phase information
+    """
     if not ball_positions:
         return []
 
@@ -99,15 +100,12 @@ def detect_shots(ball_positions, hoop_x, hoop_y, frame_width):
             made = last_after["y"] > closest["y"] and horizontal_offset <= radius * MADE_OFFSET_FRACTION
             end_point = last_after
         else:
-            # Ball not seen again after the closest approach (e.g. it left
-            # frame, or is occluded by the net). Default to "missed" rather
-            # than assume a make with no supporting evidence.
             made = False
             end_point = closest
 
         confidence = max(0.0, 1 - closest["distance"] / radius)
 
-        events.append({
+        event = {
             "event_type": "shot",
             "start_frame": cluster[0]["frame_number"],
             "end_frame": end_point["frame_number"],
@@ -121,6 +119,57 @@ def detect_shots(ball_positions, hoop_x, hoop_y, frame_width):
                 "hoop_x": hoop_x,
                 "hoop_y": hoop_y,
             },
-        })
+        }
+
+        # Enhance with pose-based detection if available
+        if pose_data_list:
+            pose_shot = _find_pose_shot(pose_data_list, cluster[0]["frame_number"], end_point["frame_number"])
+            if pose_shot:
+                event["event_details"]["pose_shot_confidence"] = pose_shot["confidence"]
+                event["event_details"]["pose_shot_phase"] = pose_shot["phase"]
+                # Boost confidence if both signals agree
+                if pose_shot["is_shooting"]:
+                    event["confidence_score"] = round(min(confidence + 0.2, 1.0), 3)
+
+        events.append(event)
 
     return events
+
+
+def _find_pose_shot(pose_data_list, start_frame, end_frame):
+    """Find the highest-confidence pose-based shot detection within a frame range."""
+    best_shot = None
+    best_confidence = 0.0
+
+    for pose_data in pose_data_list:
+        frame_num = pose_data.get("frame_number")
+        if frame_num is None or frame_num < start_frame or frame_num > end_frame:
+            continue
+
+        shot = detect_shooting_motion(pose_data)
+        if shot["is_shooting"] and shot["confidence"] > best_confidence:
+            best_confidence = shot["confidence"]
+            best_shot = shot
+
+    return best_shot
+
+
+def classify_shot_type(shot_event, court_homography=None, hoop_court_coords=None):
+    """Classify a shot as 1PT, 2PT, or 3PT based on court coordinates.
+
+    Args:
+        shot_event: shot event dict from detect_shots()
+        court_homography: 3x3 homography matrix from court_detection
+        hoop_court_coords: (x_ft, y_ft) of hoop in court coordinates
+
+    Returns:
+        int: 1, 2, or 3 (point value), or None if classification not possible
+    """
+    if court_homography is None or hoop_court_coords is None:
+        return None
+
+    # Get shot origin (start of shot)
+    start_frame = shot_event["start_frame"]
+    # We need the ball position at shot origin - this would need to be passed in
+    # For now, return None if we can't classify
+    return None

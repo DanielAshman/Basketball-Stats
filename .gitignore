@@ -12,3 +12,5 @@ data/*
 logs/*
 !logs/.gitkeep
 backend/*.pt
+.claude/skills/run-basketball-analytics/screenshots/*
+!.claude/skills/run-basketball-analytics/screenshots/.gitkeep

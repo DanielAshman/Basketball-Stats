@@ -9,12 +9,16 @@ numpy==1.24.3
 Pillow==10.0.1
 # Vision models (YOLOv8 - much better for local use than Google Cloud)
 ultralytics==8.4.129
+# Hungarian-algorithm matching used by ultralytics' ByteTrack (model.track()) -
+# ultralytics auto-installs this at runtime if it's missing, which isn't safe
+# to rely on inside a container with no guaranteed outbound access; pin it.
+lap==0.5.13
 pytesseract==0.3.13
-# Task queue for async processing
-celery==5.3.4
-redis==5.0.1
+# Database migrations
+alembic==1.13.2
 # Utilities
 pydantic==2.5.0
 pydantic-settings==2.1.0
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+# Linting & type checking
+ruff==0.6.9
+mypy==1.11.2

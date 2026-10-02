@@ -1,0 +1,13 @@
+{
+  "name": "run-basketball-analytics-driver",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "Playwright driver used by the run-basketball-analytics skill to launch and smoke-test the app.",
+  "scripts": {
+    "smoke": "node driver.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

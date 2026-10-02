@@ -1,23 +1,26 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   createManualGame,
   createOrFindPlayer,
   deleteManualEvent,
   listGames,
+  listGamePlayers,
   listManualEvents,
   recordManualEvent,
 } from '../api'
 import PlayerStatsTable from '../components/PlayerStatsTable'
 
 const EVENT_BUTTONS = [
-  { label: 'Made Shot', eventType: 'shot', made: true, color: 'bg-green-600' },
+  { label: '1 Pointer', eventType: 'shot', made: true, points: 1, color: 'bg-green-600' },
+  { label: '2 Pointer', eventType: 'shot', made: true, points: 2, color: 'bg-green-600' },
+  { label: '3 Pointer', eventType: 'shot', made: true, points: 3, color: 'bg-green-600' },
   { label: 'Missed Shot', eventType: 'shot', made: false, color: 'bg-red-600' },
   { label: 'Rebound', eventType: 'rebound', color: 'bg-sky-600' },
   { label: 'Turnover', eventType: 'turnover', color: 'bg-amber-600' },
   { label: 'Assist', eventType: 'assist', color: 'bg-purple-600' },
 ]
 
-function NewGameForm({ onCreated }) {
+function NewGameForm({ onCreated, onError }) {
   const [title, setTitle] = useState('')
   const [datePlayed, setDatePlayed] = useState('')
   const [creating, setCreating] = useState(false)
@@ -28,6 +31,8 @@ function NewGameForm({ onCreated }) {
     try {
       const game = await createManualGame({ title, datePlayed })
       onCreated(game)
+    } catch (err) {
+      onError(err)
     } finally {
       setCreating(false)
     }
@@ -67,21 +72,37 @@ function NewGameForm({ onCreated }) {
   )
 }
 
-function AddPlayerForm({ onAdd }) {
+function AddPlayerForm({ gameId, onAdd, onError }) {
   const [jersey, setJersey] = useState('')
   const [name, setName] = useState('')
+  const [team, setTeam] = useState('home')
+  const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
     if (jersey === '') return
-    const player = await createOrFindPlayer(Number(jersey), name.trim())
-    onAdd(player)
-    setJersey('')
-    setName('')
+    setSaving(true)
+    try {
+      const player = await createOrFindPlayer(gameId, Number(jersey), name.trim(), team)
+      onAdd(player, gameId)
+      setJersey('')
+      setName('')
+    } catch (err) {
+      onError(err)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-2">
+      <label className="flex flex-col gap-1 text-sm">
+        Team
+        <select value={team} onChange={(e) => setTeam(e.target.value)} className="rounded border px-2 py-1 dark:bg-neutral-800">
+          <option value="home">Home</option>
+          <option value="away">Away</option>
+        </select>
+      </label>
       <label className="flex flex-col gap-1 text-sm">
         Jersey #
         <input
@@ -103,7 +124,7 @@ function AddPlayerForm({ onAdd }) {
           className="w-36 rounded border border-neutral-300 px-2 py-1 dark:border-neutral-600 dark:bg-neutral-800"
         />
       </label>
-      <button type="submit" className="rounded border border-neutral-300 px-3 py-1 text-sm dark:border-neutral-600">
+      <button type="submit" disabled={saving} className="rounded border border-neutral-300 px-3 py-1 text-sm dark:border-neutral-600">
         Add to roster
       </button>
     </form>
@@ -125,7 +146,7 @@ function PlayerRow({ player, onTap }) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded border border-neutral-200 p-2 dark:border-neutral-700">
       <span className="w-28 shrink-0 font-medium">
-        #{player.jersey_number}
+        {player.team === 'away' ? 'Away' : 'Home'} #{player.jersey_number}
         {player.player_name ? ` ${player.player_name}` : ''}
       </span>
       {EVENT_BUTTONS.map((b) => (
@@ -150,9 +171,9 @@ function ActivityLog({ events, onUndo }) {
       {events.slice(0, 15).map((e) => (
         <li key={e.id} className="flex items-center justify-between gap-2 rounded px-2 py-1 odd:bg-neutral-50 dark:odd:bg-neutral-800/50">
           <span>
-            #{e.jersey_number}
+            {e.team === 'away' ? 'Away' : 'Home'} #{e.jersey_number}
             {e.player_name ? ` ${e.player_name}` : ''} —{' '}
-            {e.event_type === 'shot' ? (e.made ? 'Made Shot' : 'Missed Shot') : e.event_type}
+            {e.event_type === 'shot' ? (e.made ? `${e.points ?? 2} Pointer` : 'Missed Shot') : e.event_type}
           </span>
           <button onClick={() => onUndo(e.id)} className="text-xs text-neutral-500 underline hover:text-neutral-800 dark:hover:text-neutral-200">
             Undo
@@ -169,37 +190,45 @@ export default function ManualEntryPage() {
   const [roster, setRoster] = useState([])
   const [events, setEvents] = useState([])
   const [statsRefreshKey, setStatsRefreshKey] = useState(0)
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const activeGameId = useRef(null)
+  const showError = useCallback((err) => {
+    const detail = err.response?.data?.detail
+    setError(typeof detail === 'string' ? detail : err.message || 'Something went wrong. Please try again.')
+  }, [])
 
   const refreshGamesList = useCallback(() => {
     listGames()
       .then((games) => setManualGames(games.filter((g) => g.entry_mode === 'manual')))
-      .catch(console.error)
-  }, [])
+      .catch(showError)
+  }, [showError])
 
   useEffect(() => {
     refreshGamesList()
   }, [refreshGamesList])
 
   const refreshEvents = useCallback(async (gameId) => {
-    const evts = await listManualEvents(gameId)
+    const [evts, players] = await Promise.all([listManualEvents(gameId), listGamePlayers(gameId)])
+    if (activeGameId.current !== gameId) return
     setEvents(evts)
-    // Rebuild the roster to include anyone with logged events, even after a
-    // page reload where the in-memory roster would otherwise be empty.
-    setRoster((prev) => {
-      const known = new Map(prev.map((p) => [p.jersey_number, p]))
-      for (const e of evts) {
-        if (!known.has(e.jersey_number)) {
-          known.set(e.jersey_number, { jersey_number: e.jersey_number, player_name: e.player_name })
-        }
-      }
-      return [...known.values()].sort((a, b) => a.jersey_number - b.jersey_number)
-    })
+    setRoster(players)
   }, [])
 
-  function selectGame(game) {
+  async function selectGame(game) {
+    activeGameId.current = game.id
     setActiveGame(game)
     setRoster([])
-    refreshEvents(game.id)
+    setEvents([])
+    setError(null)
+    setLoading(true)
+    try {
+      await refreshEvents(game.id)
+    } catch (err) {
+      showError(err)
+    } finally {
+      if (activeGameId.current === game.id) setLoading(false)
+    }
   }
 
   function handleGameCreated(game) {
@@ -207,26 +236,44 @@ export default function ManualEntryPage() {
     selectGame(game)
   }
 
-  function handleAddPlayer(player) {
-    setRoster((prev) => (prev.some((p) => p.jersey_number === player.jersey_number) ? prev : [...prev, player].sort((a, b) => a.jersey_number - b.jersey_number)))
+  function handleAddPlayer(player, gameId) {
+    if (activeGameId.current !== gameId) return
+    setError(null)
+    setRoster((prev) => [...prev.filter((p) => p.id !== player.id), player])
   }
 
   async function handleTap(player, button) {
-    await recordManualEvent(activeGame.id, player.id, button.eventType, button.made)
-    await refreshEvents(activeGame.id)
+    setError(null)
+    try {
+      await recordManualEvent(activeGame.id, player.id, button.eventType, button.made, button.points)
+    } catch (err) {
+      showError(err)
+      return
+    }
     setStatsRefreshKey((k) => k + 1)
+    try {
+      await refreshEvents(activeGame.id)
+    } catch {
+      setError('Stat saved, but the display could not refresh. Reopen the game to reload it.')
+    }
   }
 
   async function handleUndo(eventId) {
-    await deleteManualEvent(activeGame.id, eventId)
-    await refreshEvents(activeGame.id)
-    setStatsRefreshKey((k) => k + 1)
+    setError(null)
+    try {
+      await deleteManualEvent(activeGame.id, eventId)
+      await refreshEvents(activeGame.id)
+      setStatsRefreshKey((k) => k + 1)
+    } catch (err) {
+      showError(err)
+    }
   }
 
   if (!activeGame) {
     return (
       <div className="flex flex-col gap-6">
-        <NewGameForm onCreated={handleGameCreated} />
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        <NewGameForm onCreated={handleGameCreated} onError={showError} />
         {manualGames.length > 0 && (
           <div className="flex flex-col gap-2">
             <h2 className="text-lg font-semibold">Resume a game</h2>
@@ -237,7 +284,7 @@ export default function ManualEntryPage() {
                   onClick={() => selectGame(g)}
                   className="rounded border border-neutral-200 px-3 py-2 text-left text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
                 >
-                  {g.title} — {g.date_played} ({g.made_shots}/{g.total_shots} shots, {g.total_rebounds} reb)
+                  {g.title} — {g.date_played} ({g.total_points ?? 0} pts, {g.made_shots}/{g.total_shots} shots, {g.total_rebounds} reb)
                 </button>
               ))}
             </div>
@@ -254,22 +301,24 @@ export default function ManualEntryPage() {
           {activeGame.title} <span className="font-normal text-neutral-500">({activeGame.date_played})</span>
         </h2>
         <button
-          onClick={() => setActiveGame(null)}
+          onClick={() => { activeGameId.current = null; setActiveGame(null); setError(null); refreshGamesList() }}
           className="rounded border border-neutral-300 px-3 py-1 text-sm dark:border-neutral-600"
         >
           Switch game
         </button>
       </div>
 
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {loading && <p role="status">Loading roster…</p>}
       <div className="flex flex-col gap-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-700">
         <h3 className="font-semibold">Roster</h3>
-        <AddPlayerForm onAdd={handleAddPlayer} />
+        <AddPlayerForm key={activeGame.id} gameId={activeGame.id} onAdd={handleAddPlayer} onError={showError} />
         {roster.length === 0 ? (
           <p className="text-sm text-neutral-500">Add players above to start recording stats.</p>
         ) : (
           <div className="flex flex-col gap-2">
             {roster.map((p) => (
-              <PlayerRow key={p.jersey_number} player={p} onTap={handleTap} />
+              <PlayerRow key={p.id} player={p} onTap={handleTap} />
             ))}
           </div>
         )}

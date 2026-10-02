@@ -38,6 +38,10 @@ export default function PlayerStatsTable({ gameId, refreshKey, emptyMessage }) {
           <tr className="border-b border-neutral-200 dark:border-neutral-700">
             <th className="py-2 pr-4">Player</th>
             <th className="py-2 pr-4">Shots</th>
+            <th className="py-2 pr-4">1PT</th>
+            <th className="py-2 pr-4">2PT</th>
+            <th className="py-2 pr-4">3PT</th>
+            <th className="py-2 pr-4">Points</th>
             <th className="py-2 pr-4">Rebounds</th>
             <th className="py-2 pr-4">Turnovers</th>
             <th className="py-2 pr-4">Assists</th>
@@ -47,12 +51,16 @@ export default function PlayerStatsTable({ gameId, refreshKey, emptyMessage }) {
           {players.map((p) => (
             <tr key={p.player_id} className="border-b border-neutral-100 dark:border-neutral-800">
               <td className="py-2 pr-4">
-                #{p.jersey_number}
+                {p.team === 'away' ? 'Away' : 'Home'} #{p.jersey_number}
                 {p.player_name ? ` ${p.player_name}` : ''}
               </td>
               <td className="py-2 pr-4">
                 {p.shots_made}/{p.shots_attempted}
               </td>
+              <td className="py-2 pr-4">{p.one_pointers_made}</td>
+              <td className="py-2 pr-4">{p.two_pointers_made}</td>
+              <td className="py-2 pr-4">{p.three_pointers_made}</td>
+              <td className="py-2 pr-4">{p.points}</td>
               <td className="py-2 pr-4">{p.rebounds}</td>
               <td className="py-2 pr-4">{p.turnovers}</td>
               <td className="py-2 pr-4">{p.assists}</td>

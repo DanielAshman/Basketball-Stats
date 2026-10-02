@@ -3,6 +3,7 @@ import { useState } from 'react'
 export default function PlayerTagForm({ detection, onSave, onCancel }) {
   const [jersey, setJersey] = useState(detection.player_jersey_number ?? detection.estimated_jersey_number ?? '')
   const [name, setName] = useState(detection.player_name ?? '')
+  const [team, setTeam] = useState(detection.player_team ?? 'home')
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e) {
@@ -11,7 +12,7 @@ export default function PlayerTagForm({ detection, onSave, onCancel }) {
     if (jersey === '') return
     setSaving(true)
     try {
-      await onSave(detection.id, Number(jersey), name.trim())
+      await onSave(detection, Number(jersey), name.trim(), team)
     } finally {
       setSaving(false)
     }
@@ -24,6 +25,12 @@ export default function PlayerTagForm({ detection, onSave, onCancel }) {
       className="absolute z-10 flex flex-col gap-1 rounded border border-neutral-300 bg-white p-2 text-xs shadow-lg dark:border-neutral-600 dark:bg-neutral-800"
       style={{ top: '100%', left: 0, marginTop: 4 }}
     >
+      <label className="flex flex-col gap-0.5">
+        Team
+        <select value={team} onChange={(e) => setTeam(e.target.value)}>
+          <option value="home">Home</option><option value="away">Away</option>
+        </select>
+      </label>
       <label className="flex flex-col gap-0.5">
         Jersey #
         <input
@@ -45,6 +52,11 @@ export default function PlayerTagForm({ detection, onSave, onCancel }) {
           className="w-32 rounded border border-neutral-300 px-1 py-0.5 dark:border-neutral-600 dark:bg-neutral-700"
         />
       </label>
+      <p className="max-w-32 text-neutral-500">
+        {detection.track_id != null
+          ? 'Applies to every frame this player is tracked in.'
+          : 'Applies to this frame only (not tracked).'}
+      </p>
       <div className="mt-1 flex gap-1">
         <button
           type="submit"

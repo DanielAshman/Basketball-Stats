@@ -3,22 +3,24 @@ import os
 import uuid
 from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
 from models import DetectedObject, Frame, Game, GameEvent, Player
+from services.player_migration import migrate_players
 from services.frame_extraction import extract_frames
 from services.jersey_ocr import read_jersey_number
 from services.player_attribution import closest_person_to_ball, find_shooter_reference_point, proximity_radius
 from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
-from services.vision_service import detect_objects, get_model
+from services.vision_service import detect_objects, get_model, reset_tracker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,8 +55,23 @@ with engine.begin() as conn:
     conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS estimated_jersey_number INT"))
     conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS jersey_confidence NUMERIC(5,3)"))
     conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS player_id UUID REFERENCES players(id)"))
+    conn.execute(text("ALTER TABLE detected_objects ADD COLUMN IF NOT EXISTS track_id INT"))
     conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS entry_mode VARCHAR(20) DEFAULT 'video'"))
     conn.execute(text("ALTER TABLE game_events ADD COLUMN IF NOT EXISTS player_id UUID REFERENCES players(id)"))
+    conn.execute(text("ALTER TABLE games ADD COLUMN IF NOT EXISTS total_points INT DEFAULT 0"))
+    conn.execute(text("""
+        UPDATE games
+        SET total_points = COALESCE((
+            SELECT SUM(CASE
+                WHEN event_type = 'shot' AND event_details->>'made' = 'true'
+                THEN COALESCE((event_details->>'points')::int, 2)
+                ELSE 0
+            END)
+            FROM game_events
+            WHERE game_events.game_id = games.id
+        ), 0)
+    """))
+    migrate_players(conn)
 
 
 class HoopPosition(BaseModel):
@@ -63,7 +80,8 @@ class HoopPosition(BaseModel):
 
 
 class PlayerAssignment(BaseModel):
-    jersey_number: int
+    team: Literal["home", "away"] = "home"
+    jersey_number: int = Field(ge=0, le=99)
     player_name: str | None = None
 
 
@@ -75,7 +93,9 @@ class ManualGameInput(BaseModel):
 
 
 class PlayerInput(BaseModel):
-    jersey_number: int
+    game_id: uuid.UUID
+    team: Literal["home", "away"] = "home"
+    jersey_number: int = Field(ge=0, le=99)
     player_name: str | None = None
 
 
@@ -83,16 +103,24 @@ class ManualEventInput(BaseModel):
     player_id: uuid.UUID
     event_type: str  # "shot" | "rebound" | "turnover" | "assist"
     made: bool | None = None  # only meaningful for event_type == "shot"
+    points: Literal[1, 2, 3] | None = None  # only meaningful for a made shot
 
 
-def get_or_create_player(db: Session, jersey_number: int, player_name: str | None = None) -> Player:
-    player = db.query(Player).filter(Player.jersey_number == jersey_number).first()
+def serialize_player(player):
+    return {"id": str(player.id), "jersey_number": player.jersey_number,
+            "player_name": player.player_name, "team": player.team}
+
+
+def get_or_create_player(db: Session, game_id, team, jersey_number, player_name=None) -> Player:
+    player = db.query(Player).filter(
+        Player.game_id == game_id, Player.team == team, Player.jersey_number == jersey_number
+    ).first()
     if not player:
-        player = Player(jersey_number=jersey_number, player_name=player_name)
+        player = Player(game_id=game_id, team=team, jersey_number=jersey_number, player_name=player_name)
         db.add(player)
         db.commit()
         db.refresh(player)
-    elif player_name and not player.player_name:
+    elif player_name and player.player_name != player_name:
         player.player_name = player_name
         db.commit()
     return player
@@ -175,6 +203,7 @@ async def create_manual_game(payload: ManualGameInput, db: Session = Depends(get
         frame_count=0,
         total_shots=0,
         made_shots=0,
+        total_points=0,
         total_rebounds=0,
         total_turnovers=0,
         total_assists=0,
@@ -190,8 +219,17 @@ async def create_or_find_player(payload: PlayerInput, db: Session = Depends(get_
     """Find-or-create a player by jersey number, for the manual-entry roster
     (video games instead tag players against a specific detection - see
     assign_player)."""
-    player = get_or_create_player(db, payload.jersey_number, payload.player_name)
-    return {"id": str(player.id), "jersey_number": player.jersey_number, "player_name": player.player_name}
+    if not db.query(Game).filter(Game.id == payload.game_id).first():
+        raise HTTPException(status_code=404, detail="Game not found")
+    player = get_or_create_player(db, payload.game_id, payload.team, payload.jersey_number, payload.player_name)
+    return serialize_player(player)
+
+
+@app.get("/api/games/{game_id}/players")
+async def list_game_players(game_id: uuid.UUID, db: Session = Depends(get_db)):
+    return {"players": [serialize_player(p) for p in db.query(Player).filter(
+        Player.game_id == game_id
+    ).order_by(Player.team, Player.jersey_number).all()]}
 
 
 @app.post("/api/games/{game_id}/manual-events")
@@ -207,7 +245,14 @@ async def record_manual_event(game_id: uuid.UUID, event: ManualEventInput, db: S
     if not player:
         raise HTTPException(status_code=404, detail="Player not found")
 
-    details = {"made": bool(event.made)} if event.event_type == "shot" else {}
+    if player.game_id != game_id:
+        raise HTTPException(status_code=400, detail="Player is not on this game roster")
+
+    if event.points is not None and (event.event_type != "shot" or not event.made):
+        raise HTTPException(status_code=422, detail="points can only be set for a made shot")
+
+    points = event.points or 2 if event.event_type == "shot" and event.made else 0
+    details = {"made": bool(event.made), "points": points} if event.event_type == "shot" else {}
     game_event = GameEvent(
         game_id=game_id,
         event_type=event.event_type,
@@ -221,6 +266,7 @@ async def record_manual_event(game_id: uuid.UUID, event: ManualEventInput, db: S
         game.total_shots = (game.total_shots or 0) + 1
         if event.made:
             game.made_shots = (game.made_shots or 0) + 1
+            game.total_points = (game.total_points or 0) + points
     elif event.event_type == "rebound":
         game.total_rebounds = (game.total_rebounds or 0) + 1
     elif event.event_type == "turnover":
@@ -256,8 +302,11 @@ async def list_manual_events(game_id: uuid.UUID, db: Session = Depends(get_db)):
         "events": [
             {
                 "id": str(e.id),
+                "player_id": str(e.player_id),
+                "team": players[e.player_id].team if e.player_id in players else None,
                 "event_type": e.event_type,
                 "made": (e.event_details or {}).get("made"),
+                "points": (e.event_details or {}).get("points"),
                 "jersey_number": players[e.player_id].jersey_number if e.player_id in players else None,
                 "player_name": players[e.player_id].player_name if e.player_id in players else None,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
@@ -280,6 +329,7 @@ async def delete_manual_event(game_id: uuid.UUID, event_id: uuid.UUID, db: Sessi
         game.total_shots = max(0, (game.total_shots or 0) - 1)
         if details.get("made"):
             game.made_shots = max(0, (game.made_shots or 0) - 1)
+            game.total_points = max(0, (game.total_points or 0) - details.get("points", 2))
     elif game_event.event_type == "rebound":
         game.total_rebounds = max(0, (game.total_rebounds or 0) - 1)
     elif game_event.event_type == "turnover":
@@ -360,6 +410,7 @@ async def get_frame_detections(game_id: uuid.UUID, frame_number: int, db: Sessio
         "detections": [
             {
                 "id": str(o.id),
+                "track_id": o.track_id,
                 "object_type": o.object_type,
                 "confidence_score": float(o.confidence_score) if o.confidence_score is not None else None,
                 "bbox_x": o.bbox_x,
@@ -371,6 +422,7 @@ async def get_frame_detections(game_id: uuid.UUID, frame_number: int, db: Sessio
                 "player_id": str(o.player_id) if o.player_id is not None else None,
                 "player_jersey_number": players[o.player_id].jersey_number if o.player_id in players else None,
                 "player_name": players[o.player_id].player_name if o.player_id in players else None,
+                "player_team": players[o.player_id].team if o.player_id in players else None,
             }
             for o in objects
         ],
@@ -388,12 +440,44 @@ async def assign_player(detection_id: uuid.UUID, assignment: PlayerAssignment, d
     if detection.object_type != "person":
         raise HTTPException(status_code=400, detail="Only person detections can be assigned a player")
 
-    player = get_or_create_player(db, assignment.jersey_number, assignment.player_name)
+    frame = db.query(Frame).filter(Frame.id == detection.frame_id).one()
+    player = get_or_create_player(db, frame.game_id, assignment.team, assignment.jersey_number, assignment.player_name)
     detection.player_id = player.id
     db.commit()
 
     return {
         "detection_id": str(detection_id),
+        "player_id": str(player.id),
+        "player_jersey_number": player.jersey_number,
+        "player_name": player.player_name,
+    }
+
+
+@app.post("/api/games/{game_id}/tracks/{track_id}/player")
+async def assign_player_to_track(
+    game_id: uuid.UUID, track_id: int, assignment: PlayerAssignment, db: Session = Depends(get_db)
+):
+    """Assign a player to every detection sharing this track_id within this
+    game, not just one frame's detection - see DetectedObject.track_id.
+    Detections the tracker couldn't tie to a track (track_id is null) aren't
+    reachable this way; use /api/detections/{id}/player for those."""
+    detections = (
+        db.query(DetectedObject)
+        .join(Frame, Frame.id == DetectedObject.frame_id)
+        .filter(Frame.game_id == game_id, DetectedObject.track_id == track_id, DetectedObject.object_type == "person")
+        .all()
+    )
+    if not detections:
+        raise HTTPException(status_code=404, detail="No person detections found for this track in this game")
+
+    player = get_or_create_player(db, game_id, assignment.team, assignment.jersey_number, assignment.player_name)
+    for detection in detections:
+        detection.player_id = player.id
+    db.commit()
+
+    return {
+        "track_id": track_id,
+        "detections_tagged": len(detections),
         "player_id": str(player.id),
         "player_jersey_number": player.jersey_number,
         "player_name": player.player_name,
@@ -500,12 +584,14 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
 
     game.total_shots = len(shot_events)
     game.made_shots = sum(1 for e in shot_events if e["event_details"]["made"])
+    game.total_points = game.made_shots * 2
     game.total_rebounds = len(rebound_events)
     db.commit()
 
     return {
         "total_shots": game.total_shots,
         "made_shots": game.made_shots,
+        "total_points": game.total_points,
         "total_rebounds": game.total_rebounds,
         "events": all_events,
     }
@@ -540,7 +626,11 @@ async def get_player_stats(game_id: uuid.UUID, db: Session = Depends(get_db)):
 
     def bump(player_id, **deltas):
         s = stats.setdefault(
-            player_id, {"shots_attempted": 0, "shots_made": 0, "rebounds": 0, "turnovers": 0, "assists": 0}
+            player_id, {
+                "shots_attempted": 0, "shots_made": 0, "one_pointers_made": 0,
+                "two_pointers_made": 0, "three_pointers_made": 0, "points": 0,
+                "rebounds": 0, "turnovers": 0, "assists": 0,
+            }
         )
         for key, amount in deltas.items():
             s[key] += amount
@@ -554,7 +644,12 @@ async def get_player_stats(game_id: uuid.UUID, db: Session = Depends(get_db)):
             player_id = direct_player_id or details.get("shooter_player_id")
             if not player_id:
                 continue
-            bump(player_id, shots_attempted=1, shots_made=1 if details.get("made") else 0)
+            point_value = details.get("points", 2) if details.get("made") else 0
+            point_key = {1: "one_pointers_made", 2: "two_pointers_made", 3: "three_pointers_made"}.get(point_value)
+            deltas = {"shots_attempted": 1, "shots_made": 1 if details.get("made") else 0, "points": point_value}
+            if point_key:
+                deltas[point_key] = 1
+            bump(player_id, **deltas)
         elif e.event_type == "rebound":
             player_id = direct_player_id or details.get("rebounder_player_id")
             if not player_id:
@@ -576,6 +671,7 @@ async def get_player_stats(game_id: uuid.UUID, db: Session = Depends(get_db)):
     result = [
         {
             "player_id": player_id,
+            "team": players[player_id].team if player_id in players else None,
             "jersey_number": players[player_id].jersey_number if player_id in players else None,
             "player_name": players[player_id].player_name if player_id in players else None,
             **totals,
@@ -600,6 +696,7 @@ def serialize_game(game: Game) -> dict:
         "video_duration_seconds": game.video_duration_seconds,
         "total_shots": game.total_shots,
         "made_shots": game.made_shots,
+        "total_points": game.total_points,
         "total_rebounds": game.total_rebounds,
         "total_turnovers": game.total_turnovers,
         "total_assists": game.total_assists,
@@ -634,6 +731,7 @@ def process_video_task(game_id: str, video_path: str):
         db.commit()
 
         logger.info(f"Running YOLOv8 detection on {len(frame_rows)} frames for game {game_id}")
+        reset_tracker(get_model())
         detection_count = 0
         for frame_row in frame_rows:
             for det in detect_objects(frame_row.local_file_path):

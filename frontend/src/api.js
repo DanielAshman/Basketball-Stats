@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+export const API_URL = import.meta.env.VITE_API_URL || '/api'
 
 export const api = axios.create({ baseURL: API_URL })
 
@@ -34,9 +34,21 @@ export async function analyzeGame(gameId) {
   return data
 }
 
-export async function assignPlayer(detectionId, jerseyNumber, playerName) {
+export async function assignPlayer(detectionId, jerseyNumber, playerName, team = 'home') {
   const { data } = await api.post(`/api/detections/${detectionId}/player`, {
     jersey_number: jerseyNumber,
+    team,
+    player_name: playerName || null,
+  })
+  return data
+}
+
+// Tags every detection sharing this track_id within the game, not just one
+// frame's detection - use this whenever the detection has a track_id.
+export async function assignPlayerToTrack(gameId, trackId, jerseyNumber, playerName, team = 'home') {
+  const { data } = await api.post(`/api/games/${gameId}/tracks/${trackId}/player`, {
+    jersey_number: jerseyNumber,
+    team,
     player_name: playerName || null,
   })
   return data
@@ -57,19 +69,22 @@ export async function createManualGame({ title, datePlayed, homeTeam, awayTeam }
   return data
 }
 
-export async function createOrFindPlayer(jerseyNumber, playerName) {
+export async function createOrFindPlayer(gameId, jerseyNumber, playerName, team = 'home') {
   const { data } = await api.post('/api/players', {
+    game_id: gameId,
     jersey_number: jerseyNumber,
+    team,
     player_name: playerName || null,
   })
   return data
 }
 
-export async function recordManualEvent(gameId, playerId, eventType, made) {
+export async function recordManualEvent(gameId, playerId, eventType, made, points) {
   const { data } = await api.post(`/api/games/${gameId}/manual-events`, {
     player_id: playerId,
     event_type: eventType,
     made: made ?? null,
+    points: points ?? null,
   })
   return data
 }
@@ -82,4 +97,9 @@ export async function listManualEvents(gameId) {
 export async function deleteManualEvent(gameId, eventId) {
   const { data } = await api.delete(`/api/games/${gameId}/manual-events/${eventId}`)
   return data
+}
+
+export async function listGamePlayers(gameId) {
+  const { data } = await api.get(`/api/games/${gameId}/players`)
+  return data.players
 }

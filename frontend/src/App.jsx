@@ -1,7 +1,7 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import VideoDashboard from './pages/VideoDashboard'
 import ManualEntryPage from './pages/ManualEntryPage'
-import './App.css'
+
 
 const navLinkClass = ({ isActive }) =>
   `rounded px-3 py-1.5 text-sm font-medium ${

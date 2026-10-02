@@ -18,18 +18,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis (for task queue, caching)
-  redis:
-    image: redis:7-alpine
-    container_name: basketball_redis
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # FastAPI Backend
   backend:
     build:
@@ -41,7 +29,6 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://basketball_user:dev_password_123@postgres:5432/basketball_analytics
-      REDIS_URL: redis://redis:6379
       VIDEOS_PATH: /app/videos
       ENVIRONMENT: development
     volumes:
@@ -51,13 +38,22 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Frontend (production build via nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: basketball_frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

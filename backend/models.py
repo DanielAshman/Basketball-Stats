@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -38,6 +38,7 @@ class Game(Base):
 
     total_shots = Column(Integer, default=0)
     made_shots = Column(Integer, default=0)
+    total_points = Column(Integer, default=0)
     total_rebounds = Column(Integer, default=0)
     total_turnovers = Column(Integer, default=0)
     total_assists = Column(Integer, default=0)
@@ -62,8 +63,10 @@ class Frame(Base):
 
 class Player(Base):
     __tablename__ = "players"
+    __table_args__ = (UniqueConstraint("game_id", "team", "jersey_number", name="uq_player_game_team_jersey"),)
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"))
     jersey_number = Column(Integer, nullable=False)
     player_name = Column(String(255))
     team = Column(String(100))
@@ -81,6 +84,13 @@ class DetectedObject(Base):
     bbox_y = Column(Integer)
     bbox_width = Column(Integer)
     bbox_height = Column(Integer)
+    # ByteTrack ID from vision_service.detect_objects, unique within a game
+    # (the tracker is reset before each game's frame loop - see
+    # vision_service.reset_tracker) but not across games. Null if the
+    # tracker couldn't associate this detection with any track. Lets a coach
+    # tag a player once per track instead of once per frame - see
+    # assign_player_to_track below.
+    track_id = Column(Integer)
     estimated_jersey_number = Column(Integer)
     jersey_confidence = Column(Numeric(5, 3))
     # Manually assigned by a coach correcting the (unreliable) OCR guess -

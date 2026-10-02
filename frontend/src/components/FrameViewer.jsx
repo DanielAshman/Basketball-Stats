@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { API_URL, analyzeGame, assignPlayer, getFrameDetections, setHoopPosition } from '../api'
+import { API_URL, analyzeGame, assignPlayer, assignPlayerToTrack, getFrameDetections, setHoopPosition } from '../api'
 import PlayerTagForm from './PlayerTagForm'
 
 const BOX_COLORS = {
@@ -40,8 +40,12 @@ export default function FrameViewer({ game, onGameUpdated }) {
       .catch(console.error)
   }
 
-  async function handleAssignPlayer(detectionId, jerseyNumber, playerName) {
-    await assignPlayer(detectionId, jerseyNumber, playerName)
+  async function handleAssignPlayer(detection, jerseyNumber, playerName, team) {
+    if (detection.track_id != null) {
+      await assignPlayerToTrack(gameId, detection.track_id, jerseyNumber, playerName, team)
+    } else {
+      await assignPlayer(detection.id, jerseyNumber, playerName, team)
+    }
     setTaggingId(null)
     await refreshDetections()
   }
@@ -164,7 +168,7 @@ export default function FrameViewer({ game, onGameUpdated }) {
               >
                 <span className="absolute -top-5 left-0 whitespace-nowrap rounded bg-black/70 px-1 text-xs text-white">
                   {isTagged
-                    ? `#${d.player_jersey_number}${d.player_name ? ` ${d.player_name}` : ''}`
+                    ? `${d.player_team === 'away' ? 'Away' : 'Home'} #${d.player_jersey_number}${d.player_name ? ` ${d.player_name}` : ''}`
                     : `${d.object_type} ${Math.round(d.confidence_score * 100)}%${
                         d.estimated_jersey_number != null ? ` · #${d.estimated_jersey_number}?` : ''
                       }`}

@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 TRACKED_CLASSES = {0: "person", 32: "sports_ball"}
 CONFIDENCE_THRESHOLD = 0.25
 
+# ByteTrack: assigns a persistent track_id to each person/ball across the
+# per-frame detect_objects() calls made while processing one game (frames are
+# fed to model.track(..., persist=True) one at a time, in frame order, rather
+# than handing it a video - persist=True is what tells ByteTrack these calls
+# are one continuous sequence instead of independent single frames). At this
+# pipeline's 2fps frame sampling, verified against a real game clip: most
+# tracks survive one frame-to-frame gap (0.5s) but a track can still drop and
+# a new one spawn within 1-2s as players move fast between sampled frames -
+# so this cuts down re-tagging the same player, it doesn't eliminate it.
+TRACKER_CONFIG = "bytetrack.yaml"
+
 _model = None
 _model_lock = threading.Lock()
 
@@ -35,15 +46,30 @@ def get_model() -> YOLO:
     return _model
 
 
+def reset_tracker(model: YOLO):
+    """Clear ByteTrack's in-memory state before starting a new game's frame
+    loop, so track_ids restart at 1 instead of continuing from whatever game
+    was last processed on this shared model instance. Ultralytics has no
+    public reset API for this; dropping the lazily-created predictor forces
+    model.track() to build a fresh one (and a fresh tracker) on its next
+    call - verified this produces the same track_id sequence as a brand-new
+    YOLO instance would."""
+    model.predictor = None
+
+
 def detect_objects(frame_path: str):
-    """Run YOLOv8 on a frame and return basketball-relevant detections."""
+    """Run YOLOv8 + ByteTrack on a frame and return basketball-relevant
+    detections, tagged with a track_id where the tracker could assign one.
+    Must be called in frame order for a single game, with reset_tracker()
+    called first - see TRACKER_CONFIG above."""
     model = get_model()
     with _inference_lock:
-        results = model(frame_path, verbose=False)
+        results = model.track(frame_path, persist=True, tracker=TRACKER_CONFIG, verbose=False)
 
     detections = []
     for result in results:
-        for box in result.boxes:
+        box_ids = result.boxes.id
+        for i, box in enumerate(result.boxes):
             class_id = int(box.cls[0])
             if class_id not in TRACKED_CLASSES:
                 continue
@@ -60,6 +86,7 @@ def detect_objects(frame_path: str):
                 "bbox_y": int(y1),
                 "bbox_width": int(x2 - x1),
                 "bbox_height": int(y2 - y1),
+                "track_id": int(box_ids[i]) if box_ids is not None else None,
             })
 
     return detections

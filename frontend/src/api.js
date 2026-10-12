@@ -19,6 +19,28 @@ export async function listGames() {
   return data.games
 }
 
+export async function getGameSummary(gameId) {
+  const { data } = await api.get(`/api/games/${gameId}/summary`)
+  return data.summary
+}
+
+export async function generateGameSummary(gameId) {
+  const { data } = await api.post(`/api/games/${gameId}/summary`)
+  return data.summary
+}
+
+export async function listGameEvents(gameId) {
+  const { data } = await api.get(`/api/games/${gameId}/events`)
+  return data.events
+}
+
+export async function generateReviewExplanation(gameId, eventId) {
+  const { data } = await api.post(`/api/games/${gameId}/review`, null, {
+    params: eventId ? { event_id: eventId } : {},
+  })
+  return data.explanation
+}
+
 export async function getFrameDetections(gameId, frameNumber) {
   const { data } = await api.get(`/api/games/${gameId}/frames/${frameNumber}/detections`)
   return data

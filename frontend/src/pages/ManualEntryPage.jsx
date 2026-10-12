@@ -9,6 +9,7 @@ import {
   recordManualEvent,
 } from '../api'
 import PlayerStatsTable from '../components/PlayerStatsTable'
+import GameInsights from '../components/GameInsights'
 
 const EVENT_BUTTONS = [
   { label: '1 Pointer', eventType: 'shot', made: true, points: 1, color: 'bg-green-600' },
@@ -328,6 +329,8 @@ export default function ManualEntryPage() {
         <h3 className="font-semibold">Recent activity</h3>
         <ActivityLog events={events} onUndo={handleUndo} />
       </div>
+
+      <GameInsights key={activeGame.id} gameId={activeGame.id} />
 
       <PlayerStatsTable
         gameId={activeGame.id}

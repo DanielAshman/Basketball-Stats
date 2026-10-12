@@ -4,6 +4,7 @@ import UploadForm from '../components/UploadForm'
 import GamesList from '../components/GamesList'
 import FrameViewer from '../components/FrameViewer'
 import PlayerStatsTable from '../components/PlayerStatsTable'
+import GameInsights from '../components/GameInsights'
 
 export default function VideoDashboard() {
   const [games, setGames] = useState([])
@@ -32,6 +33,7 @@ export default function VideoDashboard() {
       <GamesList games={videoGames} onRefresh={refresh} selectedGameId={selectedGameId} onSelect={setSelectedGameId} />
       {selectedGame && <FrameViewer game={selectedGame} onGameUpdated={handleGameUpdated} />}
       {selectedGame && <PlayerStatsTable gameId={selectedGame.id} refreshKey={statsRefreshKey} />}
+      {selectedGame && <GameInsights key={selectedGame.id} gameId={selectedGame.id} />}
     </div>
   )
 }

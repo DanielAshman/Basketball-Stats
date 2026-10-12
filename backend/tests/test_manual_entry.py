@@ -1,8 +1,12 @@
 """Run with DATABASE_URL pointing at a disposable PostgreSQL test database."""
 import asyncio
+import json
 import os
 import unittest
 from datetime import date
+from io import BytesIO
+from unittest.mock import patch
+from urllib import error
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +17,11 @@ import main
 from database import engine
 from models import DetectedObject, Frame, Game, GameEvent, Player
 from services.player_migration import migrate_players
+from services.llm_summary import (
+    _call_ollama,
+    _call_ollama_for_review,
+    build_review_explanation_payload,
+)
 
 
 class ManualEntryTests(unittest.TestCase):
@@ -132,6 +141,124 @@ class ManualEntryTests(unittest.TestCase):
         self.assertEqual(14, self.game.total_points)
         self.assertEqual(10, self.game.total_shots)
         self.assertEqual(4, self.game.total_assists)
+
+    def test_review_explanation_uses_event_evidence_without_mutating_game_data(self):
+        player = self.player(self.game)
+        self.game.home_team = "Aces"
+        self.game.away_team = "Hawks"
+        self.game.total_points = 11
+        self.game.total_shots = 9
+        self.game.made_shots = 4
+        self.game.total_rebounds = 6
+        self.game.total_turnovers = 2
+        self.game.total_assists = 3
+        self.db.commit()
+
+        event = asyncio.run(main.record_manual_event(self.game.id, main.ManualEventInput(
+            player_id=player["id"], event_type="shot", made=True, points=3
+        ), self.db))
+        asyncio.run(main.record_manual_event(self.game.id, main.ManualEventInput(
+            player_id=player["id"], event_type="assist"
+        ), self.db))
+
+        response = asyncio.run(main.generate_review_explanation_endpoint(self.game.id, event_id=event["id"], db=self.db))
+        explanation = response["explanation"]
+        self.assertIn("headline", explanation)
+        self.assertIn("explanation", explanation)
+        self.assertIn("relevant_event_ids", explanation)
+        self.assertEqual(14, self.game.total_points)
+        self.assertEqual(10, self.game.total_shots)
+        self.assertEqual(4, self.game.total_assists)
+
+    def test_review_payload_keeps_a_selected_event_in_the_evidence_window(self):
+        events = [
+            GameEvent(
+                game_id=self.game.id,
+                event_type="shot",
+                start_frame=frame,
+                event_details={"made": frame % 2 == 0},
+            )
+            for frame in range(6)
+        ]
+        self.db.add_all(events)
+        self.db.flush()
+
+        payload = build_review_explanation_payload(self.game, self.db, events[0].id)
+
+        self.assertEqual(str(events[0].id), payload["event_id"])
+        self.assertEqual(str(events[0].id), payload["recent_events"][0]["event_id"])
+        self.assertEqual(5, len(payload["recent_events"]))
+
+    def test_review_output_rejects_event_ids_outside_source_evidence(self):
+        payload = {
+            "event_id": "event-1",
+            "recent_events": [{"event_id": "event-1"}],
+        }
+        model_output = {
+            "response": json.dumps({
+                "headline": "Review",
+                "explanation": "A source-grounded explanation.",
+                "relevant_event_ids": ["event-not-in-payload"],
+            })
+        }
+        with patch("services.llm_summary.request.urlopen", return_value=BytesIO(json.dumps(model_output).encode())):
+            result = _call_ollama_for_review(payload)
+
+        self.assertEqual(["event-1"], result["relevant_event_ids"])
+        self.assertIn("outside the source evidence", result["explanation"])
+
+    def test_review_generation_falls_back_when_ollama_is_unavailable(self):
+        payload = {
+            "event_id": "event-1",
+            "recent_events": [{"event_id": "event-1"}],
+        }
+        with patch("services.llm_summary.request.urlopen", side_effect=error.URLError("offline")):
+            result = _call_ollama_for_review(payload)
+
+        self.assertEqual(["event-1"], result["relevant_event_ids"])
+        self.assertIn("unavailable", result["explanation"])
+
+    def test_summary_output_rejects_unknown_player_ids(self):
+        payload = {
+            "home_team": "Aces",
+            "away_team": "Hawks",
+            "official_totals": {"points": 0},
+            "player_totals": [{
+                "player_id": "player-1",
+                "player_name": "Alex",
+                "points": 0,
+                "rebounds": 0,
+                "assists": 0,
+            }],
+        }
+        model_output = {
+            "response": json.dumps({
+                "headline": "Game recap",
+                "summary": "A factual-looking summary.",
+                "key_performers": [{"player_id": "unknown-player", "observation": "Scored."}],
+                "data_quality_caveats": [],
+            })
+        }
+        with patch("services.llm_summary.request.urlopen", return_value=BytesIO(json.dumps(model_output).encode())):
+            result = _call_ollama(payload)
+
+        self.assertEqual("player-1", result["key_performers"][0]["player_id"])
+        self.assertIn("Fallback summary", result["data_quality_caveats"][0])
+
+    def test_summary_generation_falls_back_on_malformed_model_json(self):
+        payload = {
+            "home_team": "Aces",
+            "away_team": "Hawks",
+            "official_totals": {"points": 12},
+            "player_totals": [],
+        }
+        model_output = {"response": "{not valid json"}
+        with patch("services.llm_summary.request.urlopen", return_value=BytesIO(json.dumps(model_output).encode())):
+            result = _call_ollama(payload)
+
+        self.assertEqual("Aces vs Hawks game summary", result["headline"])
+        self.assertEqual([], result["key_performers"])
+        self.assertIn("Fallback summary", result["data_quality_caveats"][0])
 
     def test_legacy_migration_preserves_manual_and_video_stats_and_is_repeatable(self):
         old = Player(jersey_number=12, player_name="Legacy")

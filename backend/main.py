@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
-from models import DetectedObject, Frame, Game, GameEvent, GameSummaryRun, Player, PoseKeypoint
+from models import DetectedObject, Frame, Game, GameEvent, GameReviewExplanation, GameSummaryRun, Player, PoseKeypoint
 from services.player_migration import migrate_players
 from services.frame_extraction import extract_frames
 from services.jersey_ocr import read_jersey_number
@@ -22,7 +22,7 @@ from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
 from services.vision_service import detect_objects, detect_pose, get_model, get_pose_model, reset_tracker
 from services.court_detection import detect_court_lines, compute_homography, pixel_to_court_coords, is_three_point_shot
-from services.llm_summary import generate_game_summary
+from services.llm_summary import generate_game_review_explanation, generate_game_summary
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -405,6 +405,81 @@ async def get_game_summary_endpoint(game_id: uuid.UUID, db: Session = Depends(ge
     }
 
 
+@app.post("/api/games/{game_id}/review")
+async def generate_review_explanation_endpoint(
+    game_id: uuid.UUID,
+    event_id: uuid.UUID | None = None,
+    db: Session = Depends(get_db),
+):
+    """Create a read-only review explanation for one event or the most recent accepted event in the game."""
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    if event_id is not None:
+        event = db.query(GameEvent).filter(GameEvent.id == event_id, GameEvent.game_id == game_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found for this game")
+
+    explanation = generate_game_review_explanation(db, game, event_id)
+    return {
+        "game_id": str(game_id),
+        "event_id": str(event_id) if event_id else None,
+        "explanation": explanation,
+    }
+
+
+@app.get("/api/games/{game_id}/review")
+async def get_review_explanation_endpoint(
+    game_id: uuid.UUID,
+    event_id: uuid.UUID | None = None,
+    db: Session = Depends(get_db),
+):
+    """Read the latest stored event explanation for the game, or generate one from the source data."""
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    if event_id is not None:
+        event = db.query(GameEvent).filter(GameEvent.id == event_id, GameEvent.game_id == game_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found for this game")
+        latest = (
+            db.query(GameReviewExplanation)
+            .filter(GameReviewExplanation.game_id == game_id, GameReviewExplanation.event_id == event_id)
+            .order_by(GameReviewExplanation.generated_at.desc())
+            .first()
+        )
+    else:
+        latest = (
+            db.query(GameReviewExplanation)
+            .filter(GameReviewExplanation.game_id == game_id)
+            .order_by(GameReviewExplanation.generated_at.desc())
+            .first()
+        )
+
+    if latest is not None:
+        return {
+            "game_id": str(game_id),
+            "event_id": str(latest.event_id) if latest.event_id else None,
+            "explanation": {
+                "headline": latest.headline,
+                "explanation": latest.explanation,
+                "relevant_event_ids": latest.relevant_event_ids or [],
+                "record_id": str(latest.id),
+            },
+            "source": "stored",
+        }
+
+    explanation = generate_game_review_explanation(db, game, event_id)
+    return {
+        "game_id": str(game_id),
+        "event_id": str(event_id) if event_id else None,
+        "explanation": explanation,
+        "source": "generated",
+    }
+
+
 @app.get("/api/games/{game_id}/frames")
 async def list_frames(game_id: uuid.UUID, db: Session = Depends(get_db)):
     frames = (
@@ -699,10 +774,16 @@ async def analyze_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @app.get("/api/games/{game_id}/events")
 async def list_events(game_id: uuid.UUID, db: Session = Depends(get_db)):
-    events = db.query(GameEvent).filter(GameEvent.game_id == game_id).order_by(GameEvent.start_frame).all()
+    events = (
+        db.query(GameEvent)
+        .filter(GameEvent.game_id == game_id)
+        .order_by(GameEvent.start_frame.desc().nullslast(), GameEvent.created_at.desc())
+        .all()
+    )
     return {
         "events": [
             {
+                "id": str(e.id),
                 "event_type": e.event_type,
                 "start_frame": e.start_frame,
                 "end_frame": e.end_frame,

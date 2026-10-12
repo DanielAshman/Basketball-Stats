@@ -9,6 +9,8 @@ vi.mock('../api', () => ({
   listGamePlayers: vi.fn(), listGames: vi.fn(), listManualEvents: vi.fn(), getPlayerStats: vi.fn(),
   createManualGame: vi.fn(), createOrFindPlayer: vi.fn(),
   recordManualEvent: vi.fn(), deleteManualEvent: vi.fn(),
+  generateGameSummary: vi.fn(), generateReviewExplanation: vi.fn(),
+  getGameSummary: vi.fn(), listGameEvents: vi.fn(),
 }))
 
 const game = { id: 'game-1', title: 'Practice', date_played: '2026-09-18', entry_mode: 'manual', made_shots: 1, total_shots: 1, total_rebounds: 0 }
@@ -21,6 +23,8 @@ beforeEach(() => {
   api.listGamePlayers.mockResolvedValue([{id: 'player-23', jersey_number: 23, player_name: 'Alex', team: 'home'}])
   api.getPlayerStats.mockResolvedValue([])
   api.recordManualEvent.mockResolvedValue({})
+  api.getGameSummary.mockResolvedValue(null)
+  api.listGameEvents.mockResolvedValue([])
 })
 afterEach(cleanup)
 

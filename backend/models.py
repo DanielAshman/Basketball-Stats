@@ -157,3 +157,23 @@ class GameSummaryRun(Base):
     status = Column(String(20), default="pending")
     error_message = Column(Text)
     generated_at = Column(DateTime, server_default=func.now())
+
+
+class GameReviewExplanation(Base):
+    __tablename__ = "game_review_explanations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+    event_id = Column(UUID(as_uuid=True), ForeignKey("game_events.id"), nullable=True)
+    headline = Column(String(255))
+    explanation = Column(Text)
+    relevant_event_ids = Column(JSONB)
+    model_name = Column(String(100), default="qwen3-4b")
+    model_version = Column(String(100), default="local")
+    schema_version = Column(String(20), default="1.0")
+    prompt_hash = Column(String(64))
+    input_snapshot = Column(JSONB)
+    output_snapshot = Column(JSONB)
+    status = Column(String(20), default="pending")
+    error_message = Column(Text)
+    generated_at = Column(DateTime, server_default=func.now())

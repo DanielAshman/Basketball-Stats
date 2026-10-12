@@ -137,3 +137,23 @@ class GameEvent(Base):
     # guess resolved at analyze time, not a direct assignment.
     player_id = Column(UUID(as_uuid=True), ForeignKey("players.id"))
     created_at = Column(DateTime, server_default=func.now())
+
+
+class GameSummaryRun(Base):
+    __tablename__ = "game_summary_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    game_id = Column(UUID(as_uuid=True), ForeignKey("games.id"), nullable=False)
+    headline = Column(String(255))
+    summary = Column(Text)
+    key_performers = Column(JSONB)
+    data_quality_caveats = Column(JSONB)
+    model_name = Column(String(100), default="qwen3-4b")
+    model_version = Column(String(100), default="latest")
+    schema_version = Column(String(20), default="1.0")
+    prompt_hash = Column(String(64))
+    input_snapshot = Column(JSONB)
+    output_snapshot = Column(JSONB)
+    status = Column(String(20), default="pending")
+    error_message = Column(Text)
+    generated_at = Column(DateTime, server_default=func.now())

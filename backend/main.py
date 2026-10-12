@@ -13,7 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import Base, SessionLocal, engine, get_db
-from models import DetectedObject, Frame, Game, GameEvent, Player, PoseKeypoint
+from models import DetectedObject, Frame, Game, GameEvent, GameSummaryRun, Player, PoseKeypoint
 from services.player_migration import migrate_players
 from services.frame_extraction import extract_frames
 from services.jersey_ocr import read_jersey_number
@@ -22,6 +22,7 @@ from services.rebound_detection import detect_rebounds
 from services.shot_detection import detect_shots
 from services.vision_service import detect_objects, detect_pose, get_model, get_pose_model, reset_tracker
 from services.court_detection import detect_court_lines, compute_homography, pixel_to_court_coords, is_three_point_shot
+from services.llm_summary import generate_game_summary
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -355,6 +356,53 @@ async def get_game(game_id: uuid.UUID, db: Session = Depends(get_db)):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
     return serialize_game(game)
+
+
+@app.post("/api/games/{game_id}/summary")
+async def generate_game_summary_endpoint(game_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Create a read-only summary from the official game stats. The model never modifies the canonical game data."""
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    summary = generate_game_summary(db, game)
+    return {
+        "game_id": str(game_id),
+        "summary": summary,
+    }
+
+
+@app.get("/api/games/{game_id}/summary")
+async def get_game_summary_endpoint(game_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Read the latest stored summary for the game, or generate one on demand if it does not exist."""
+    game = db.query(Game).filter(Game.id == game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    latest = (
+        db.query(GameSummaryRun)
+        .filter(GameSummaryRun.game_id == game_id)
+        .order_by(GameSummaryRun.generated_at.desc())
+        .first()
+    )
+    if latest is not None:
+        return {
+            "game_id": str(game_id),
+            "summary": {
+                "headline": latest.headline,
+                "summary": latest.summary,
+                "key_performers": latest.key_performers or [],
+                "data_quality_caveats": latest.data_quality_caveats or [],
+                "record_id": str(latest.id),
+            },
+            "source": "stored",
+        }
+
+    summary = generate_game_summary(db, game)
+    return {
+        "game_id": str(game_id),
+        "summary": summary,
+        "source": "generated",
+    }
 
 
 @app.get("/api/games/{game_id}/frames")

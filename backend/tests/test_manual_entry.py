@@ -105,6 +105,34 @@ class ManualEntryTests(unittest.TestCase):
         self.assertEqual(2, stats["two_pointers_made"])
         self.assertEqual(5, stats["points"])
 
+    def test_summary_generation_uses_official_totals_without_mutating_game_data(self):
+        player = self.player(self.game)
+        self.game.home_team = "Aces"
+        self.game.away_team = "Hawks"
+        self.game.total_points = 11
+        self.game.total_shots = 9
+        self.game.made_shots = 4
+        self.game.total_rebounds = 6
+        self.game.total_turnovers = 2
+        self.game.total_assists = 3
+        self.db.commit()
+
+        asyncio.run(main.record_manual_event(self.game.id, main.ManualEventInput(
+            player_id=player["id"], event_type="shot", made=True, points=3
+        ), self.db))
+        asyncio.run(main.record_manual_event(self.game.id, main.ManualEventInput(
+            player_id=player["id"], event_type="assist"
+        ), self.db))
+
+        response = asyncio.run(main.generate_game_summary_endpoint(self.game.id, self.db))
+        summary = response["summary"]
+        self.assertIn("headline", summary)
+        self.assertIn("summary", summary)
+        self.assertIn("key_performers", summary)
+        self.assertEqual(14, self.game.total_points)
+        self.assertEqual(10, self.game.total_shots)
+        self.assertEqual(4, self.game.total_assists)
+
     def test_legacy_migration_preserves_manual_and_video_stats_and_is_repeatable(self):
         old = Player(jersey_number=12, player_name="Legacy")
         self.db.add(old)
